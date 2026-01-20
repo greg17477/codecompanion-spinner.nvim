@@ -1,4 +1,4 @@
-*codecompanion-spinner.txt*    For NVIM v0.8.0   Last change: 2025 December 26
+*codecompanion-spinner.txt*    For NVIM v0.8.0    Last change: 2026 January 20
 
 ==============================================================================
 Table of Contents                    *codecompanion-spinner-table-of-contents*

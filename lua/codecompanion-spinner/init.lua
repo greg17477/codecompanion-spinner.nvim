@@ -10,6 +10,8 @@ M.opts = {
 	messages = {
 		thinking = "...thinking",
 		receiving = "...receiving",
+		awaiting_approval = "󱗿 Awaiting approval",
+		tool_running = "...tool running",
 		done = "󰄬 Done!",
 	},
 	window = {
@@ -30,6 +32,8 @@ M.opts = {
 		spinner = "DiagnosticError",
 		thinking = "DiagnosticHint",
 		receiving = "DiagnosticInfo",
+		awaiting_approval = "DiagnosticWarn",
+		tool_running = "DiagnosticHint",
 		done = "DiagnosticOk",
 	},
 }

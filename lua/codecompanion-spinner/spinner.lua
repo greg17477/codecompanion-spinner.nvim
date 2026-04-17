@@ -23,6 +23,8 @@ function M:new(chat_id, buffer, opts)
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinner", { link = hl.spinner or "DiagnosticError", default = true })
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerThinking", { link = hl.thinking or "DiagnosticHint", default = true })
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerReceiving", { link = hl.receiving or "DiagnosticInfo", default = true })
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerAwaitingApproval", { link = hl.awaiting_approval or "DiagnosticWarn", default = true })
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerToolRunning", { link = hl.tool_running or "DiagnosticHint", default = true })
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDone", { link = hl.done or "DiagnosticOk", default = true })
 
 	self.__index = self
@@ -112,6 +114,15 @@ function M:_update_text()
 		symbol = self.spinner_symbols[self.spinner_index]
 		msg = " " .. (msgs.receiving or "Receiving...")
 		hl_group = "CodeCompanionSpinnerReceiving"
+	elseif self.state == "awaiting_approval" then
+		symbol = ""
+		msg = " " .. (msgs.awaiting_approval or "Awaiting approval")
+		hl_group = "CodeCompanionSpinnerAwaitingApproval"
+	elseif self.state == "tool_running" then
+		self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
+		symbol = self.spinner_symbols[self.spinner_index]
+		msg = " " .. (msgs.tool_running or "Tool running...")
+		hl_group = "CodeCompanionSpinnerToolRunning"
 	elseif self.state == "done" then
 		symbol = ""
 		msg = " " .. (msgs.done or "Done!")
@@ -190,7 +201,7 @@ end
 
 function M:set_state(state)
 	self.state = state
-	if state == "thinking" or state == "receiving" then
+	if state == "thinking" or state == "receiving" or state == "tool_running" or state == "awaiting_approval" then
 		self.started = true
 		if self.done_timer then
 			self.done_timer:stop()

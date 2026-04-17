@@ -68,7 +68,7 @@ M.setup = function(opts)
 	})
 
 	vim.api.nvim_create_autocmd("User", {
-		pattern = "CodeCompanionChatSubmitted",
+		pattern = "CodeCompanionRequestStarted",
 		callback = function(args)
 			log.debug(args.match)
 			local chat_id = args.data.id
@@ -105,7 +105,45 @@ M.setup = function(opts)
 	})
 
 	vim.api.nvim_create_autocmd("User", {
-		pattern = "CodeCompanionChatDone",
+		pattern = "CodeCompanionToolApprovalRequested",
+		callback = function(args)
+			log.debug(args.match)
+			local chat_id = (args.data.chat and args.data.chat.id) or args.data.id
+			local spinner = spinners[chat_id]
+			if spinner then
+				spinner:set_state("awaiting_approval")
+			end
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("User", {
+		pattern = "CodeCompanionToolStarted",
+		callback = function(args)
+			log.debug(args.match)
+			local chat_id = (args.data.chat and args.data.chat.id) or args.data.id
+			local spinner = spinners[chat_id]
+			if spinner then
+				spinner:set_state("tool_running")
+			end
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("User", {
+		pattern = "CodeCompanionToolFinished",
+		callback = function(args)
+			log.debug(args.match)
+			local chat_id = (args.data.chat and args.data.chat.id) or args.data.id
+			local spinner = spinners[chat_id]
+			if spinner then
+				-- After a tool finishes, it usually goes back to thinking/receiving
+				-- For now, let's set it back to thinking as the LLM processes the tool output
+				spinner:set_state("thinking")
+			end
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("User", {
+		pattern = "CodeCompanionRequestFinished",
 		callback = function(args)
 			log.debug(args.match)
 			local chat_id = args.data.id

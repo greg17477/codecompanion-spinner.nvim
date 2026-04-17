@@ -33,7 +33,7 @@ M.setup = function()
 				log.debug("Spinner", chat_id, "not found")
 				return
 			end
-			spinner:stop()
+			spinner:disable()
 			spinners[chat_id] = nil
 		end,
 	})
@@ -43,10 +43,6 @@ M.setup = function()
 		callback = function(args)
 			log.debug(args.match)
 
-			-- When a new chat is created, this event is triggered but no spinner is
-			-- available yet. After this, the CodeCompanionChatCreated event will be
-			-- triggered, which creates the spinner. Here, we need to check if the
-			-- spinner exists.
 			local spinner = spinners[args.data.id]
 			if spinner then
 				spinner:enable()
@@ -78,7 +74,30 @@ M.setup = function()
 				log.debug("Spinner", args.data.id, "not found")
 				return
 			end
-			spinner:start()
+			spinner:set_state("thinking")
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("User", {
+		pattern = "CodeCompanionRequestStreaming",
+		callback = function(args)
+			local chat_id = (args.data.chat and args.data.chat.id) or args.data.id
+			local spinner = spinners[chat_id]
+
+			if not spinner then
+				-- Fallback: If chat_id detection fails, transition the active thinking spinner
+				for _, s in pairs(spinners) do
+					if s.state == "thinking" then
+						s:set_state("receiving")
+						return
+					end
+				end
+				return
+			end
+
+			if spinner.state == "thinking" then
+				spinner:set_state("receiving")
+			end
 		end,
 	})
 
@@ -92,7 +111,7 @@ M.setup = function()
 				log.debug("Spinner", chat_id, "not found")
 				return
 			end
-			spinner:stop()
+			spinner:set_state("done")
 		end,
 	})
 end

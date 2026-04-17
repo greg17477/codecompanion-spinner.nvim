@@ -5,10 +5,12 @@ M.log = require("codecompanion-spinner.log")
 
 M.opts = {
 	log_level = "info",
+	spinner_symbols = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+	done_timer = 2000,
 	messages = {
-		thinking = "Thinking...",
-		receiving = "Receiving...",
-		done = "Done!",
+		thinking = "...thinking",
+		receiving = "...receiving",
+		done = "󰄬 Done!",
 	},
 	window = {
 		width = 20,
@@ -25,7 +27,7 @@ M.opts = {
 		padding = 1, -- Right padding
 	},
 	highlights = {
-		spinner = "DiagnosticWarn",
+		spinner = "DiagnosticError",
 		thinking = "DiagnosticHint",
 		receiving = "DiagnosticInfo",
 		done = "DiagnosticOk",

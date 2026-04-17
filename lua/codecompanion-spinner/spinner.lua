@@ -15,12 +15,12 @@ function M:new(chat_id, buffer, opts)
 		win_id = nil,
 		namespace_id = vim.api.nvim_create_namespace("CodeCompanionSpinner"),
 		spinner_index = 0,
-		spinner_symbols = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+		spinner_symbols = opts.spinner_symbols or { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
 	}
 
 	-- Set up highlights
 	local hl = object.opts.highlights or {}
-	vim.api.nvim_set_hl(0, "CodeCompanionSpinner", { link = hl.spinner or "DiagnosticWarn", default = true })
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinner", { link = hl.spinner or "DiagnosticError", default = true })
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerThinking", { link = hl.thinking or "DiagnosticHint", default = true })
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerReceiving", { link = hl.receiving or "DiagnosticInfo", default = true })
 	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDone", { link = hl.done or "DiagnosticOk", default = true })
@@ -204,7 +204,7 @@ function M:set_state(state)
 		self.done_timer = vim.defer_fn(function()
 			self.state = "none"
 			self:_update_state()
-		end, 2000)
+		end, self.opts.done_timer or 2000)
 	end
 	self:_update_state()
 end

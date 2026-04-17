@@ -33,8 +33,13 @@ function M:new(chat_id, buffer, opts)
 	return object
 end
 
-function M:_create_window()
+function M:_create_window(width)
 	if self.win_id and vim.api.nvim_win_is_valid(self.win_id) then
+		-- Update window config if width changed
+		local s, current_config = pcall(vim.api.nvim_win_get_config, self.win_id)
+		if s and current_config.width ~= width then
+			vim.api.nvim_win_set_width(self.win_id, width)
+		end
 		return
 	end
 
@@ -51,7 +56,6 @@ function M:_create_window()
 	end
 
 	local win_config = self.opts.window or {}
-	local width = win_config.width or 20
 	local height = win_config.height or 1
 	local win_width = vim.api.nvim_win_get_width(chat_win_id)
 	local win_height = vim.api.nvim_win_get_height(chat_win_id)
@@ -59,28 +63,37 @@ function M:_create_window()
 	-- Calculate row/col with negative offset support
 	local row = win_config.row or -2
 	if row < 0 then
-		row = win_height + row
+		row = math.max(0, win_height + row)
 	end
 
 	local col = win_config.col or -1
 	if col < 0 then
-		col = win_width - width + (col + 1)
+		col = math.max(0, win_width - width + (col + 1))
 	end
 
 	local buf = vim.api.nvim_create_buf(false, true)
-	self.win_id = vim.api.nvim_open_win(buf, false, {
+	vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
+
+	local s, win_id = pcall(vim.api.nvim_open_win, buf, false, {
 		relative = "win",
 		win = chat_win_id,
 		width = width,
 		height = height,
 		row = row,
 		col = col,
-		zindex = win_config.zindex or 200,
+		zindex = win_config.zindex or 1000,
 		border = win_config.border or "none",
-		style = win_config.style or "minimal",
+		style = "minimal",
 		focusable = win_config.focusable or false,
 		noautocmd = win_config.noautocmd ~= false,
 	})
+
+	if s then
+		self.win_id = win_id
+	else
+		log.error("Failed to open spinner window: " .. tostring(win_id))
+		return
+	end
 	vim.wo[self.win_id].winblend = win_config.winblend or 10
 	if win_config.winhl then
 		vim.wo[self.win_id].winhighlight = win_config.winhl
@@ -93,12 +106,6 @@ function M:_update_text()
 		return
 	end
 
-	self:_create_window()
-	if not self.win_id or not vim.api.nvim_win_is_valid(self.win_id) then
-		return
-	end
-
-	local buf = vim.api.nvim_win_get_buf(self.win_id)
 	local msg = ""
 	local symbol = ""
 	local hl_group = ""
@@ -132,14 +139,25 @@ function M:_update_text()
 	local total_width = (self.opts.window and self.opts.window.width) or 20
 	local right_padding = (self.opts.window and self.opts.window.padding) or 1
 	local content_width = vim.fn.strdisplaywidth(symbol .. msg)
-	local leading_spaces = total_width - content_width - right_padding
+	local required_width = content_width + right_padding
+
+	if required_width > total_width then
+		total_width = required_width
+	end
+
+	self:_create_window(total_width)
+
+	if not self.win_id or not vim.api.nvim_win_is_valid(self.win_id) then
+		return
+	end
+
+	local buf = vim.api.nvim_win_get_buf(self.win_id)
+	local leading_spaces = math.max(0, total_width - content_width - right_padding)
 	local line = string.rep(" ", leading_spaces) .. symbol .. msg .. string.rep(" ", right_padding)
 
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
 
 	vim.api.nvim_buf_clear_namespace(buf, self.namespace_id, 0, -1)
-	local symbol_width = vim.fn.strdisplaywidth(symbol)
-	local msg_width = vim.fn.strdisplaywidth(msg)
 
 	if symbol ~= "" then
 		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces, {

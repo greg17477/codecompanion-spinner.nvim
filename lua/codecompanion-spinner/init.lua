@@ -40,8 +40,9 @@ M.opts = {
 
 function M.setup(opts)
 	M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
-	M.spinner_manager.setup(M.opts)
 	M.log.setup(M.opts.log_level)
+	M.spinner_manager.setup(M.opts)
+	M.log.debug("CodeCompanion Spinner initialized")
 end
 
 return M

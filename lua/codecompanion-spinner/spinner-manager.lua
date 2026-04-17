@@ -4,8 +4,11 @@ local Spinner = require("codecompanion-spinner.spinner")
 local M = {}
 
 local spinners = {} -- one spinner per chat
+local config = {}
 
-M.setup = function()
+M.setup = function(opts)
+	config = opts or {}
+
 	vim.api.nvim_create_autocmd("User", {
 		pattern = "CodeCompanionChatCreated",
 		callback = function(args)
@@ -17,7 +20,7 @@ M.setup = function()
 				return
 			end
 
-			local spinner = Spinner:new(chat_id, args.buf)
+			local spinner = Spinner:new(chat_id, args.buf, config)
 			spinner:enable()
 			spinners[chat_id] = spinner
 		end,

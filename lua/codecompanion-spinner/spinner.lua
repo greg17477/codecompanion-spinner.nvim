@@ -2,19 +2,14 @@ local log = require("codecompanion-spinner.log")
 
 local M = {}
 
--- Ensure highlight groups exist
-vim.api.nvim_set_hl(0, "CodeCompanionSpinner", { link = "DiagnosticWarn", default = true })
-vim.api.nvim_set_hl(0, "CodeCompanionSpinnerThinking", { link = "DiagnosticHint", default = true })
-vim.api.nvim_set_hl(0, "CodeCompanionSpinnerReceiving", { link = "DiagnosticInfo", default = true })
-vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDone", { link = "DiagnosticOk", default = true })
-
-function M:new(chat_id, buffer)
+function M:new(chat_id, buffer, opts)
 	local object = {
 		chat_id = chat_id,
 		buffer = buffer,
-		started = false, -- whether there is an active request in the chat
-		enabled = false, -- whether the chat buffer is displaying the chat
-		state = "none", -- none, thinking, receiving, done
+		opts = opts or {},
+		started = false,
+		enabled = false,
+		state = "none",
 		timer = nil,
 		done_timer = nil,
 		win_id = nil,
@@ -22,6 +17,14 @@ function M:new(chat_id, buffer)
 		spinner_index = 0,
 		spinner_symbols = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
 	}
+
+	-- Set up highlights
+	local hl = object.opts.highlights or {}
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinner", { link = hl.spinner or "DiagnosticWarn", default = true })
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerThinking", { link = hl.thinking or "DiagnosticHint", default = true })
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerReceiving", { link = hl.receiving or "DiagnosticInfo", default = true })
+	vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDone", { link = hl.done or "DiagnosticOk", default = true })
+
 	self.__index = self
 	setmetatable(object, self)
 	log.debug("Spinner", object.chat_id, "created")
@@ -33,7 +36,6 @@ function M:_create_window()
 		return
 	end
 
-	-- Find the window displaying the buffer
 	local chat_win_id = nil
 	for _, win in ipairs(vim.api.nvim_list_wins()) do
 		if vim.api.nvim_win_get_buf(win) == self.buffer then
@@ -46,25 +48,41 @@ function M:_create_window()
 		return
 	end
 
-	local width = 20
-	local height = 1
+	local win_config = self.opts.window or {}
+	local width = win_config.width or 20
+	local height = win_config.height or 1
 	local win_width = vim.api.nvim_win_get_width(chat_win_id)
 	local win_height = vim.api.nvim_win_get_height(chat_win_id)
+
+	-- Calculate row/col with negative offset support
+	local row = win_config.row or -2
+	if row < 0 then
+		row = win_height + row
+	end
+
+	local col = win_config.col or -1
+	if col < 0 then
+		col = win_width - width + (col + 1)
+	end
 
 	local buf = vim.api.nvim_create_buf(false, true)
 	self.win_id = vim.api.nvim_open_win(buf, false, {
 		relative = "win",
 		win = chat_win_id,
-		zindex = 200,
 		width = width,
 		height = height,
-		row = win_height - 2,
-		col = win_width - width,
-		style = "minimal",
-		focusable = false,
-		noautocmd = true,
+		row = row,
+		col = col,
+		zindex = win_config.zindex or 200,
+		border = win_config.border or "none",
+		style = win_config.style or "minimal",
+		focusable = win_config.focusable or false,
+		noautocmd = win_config.noautocmd ~= false,
 	})
-	vim.wo[self.win_id].winblend = 10 -- subtle transparency
+	vim.wo[self.win_id].winblend = win_config.winblend or 10
+	if win_config.winhl then
+		vim.wo[self.win_id].winhighlight = win_config.winhl
+	end
 end
 
 function M:_update_text()
@@ -82,43 +100,48 @@ function M:_update_text()
 	local msg = ""
 	local symbol = ""
 	local hl_group = ""
+	local msgs = self.opts.messages or {}
 
 	if self.state == "thinking" then
 		self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
 		symbol = self.spinner_symbols[self.spinner_index]
-		msg = " Thinking..."
+		msg = " " .. (msgs.thinking or "Thinking...")
 		hl_group = "CodeCompanionSpinnerThinking"
 	elseif self.state == "receiving" then
 		self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
 		symbol = self.spinner_symbols[self.spinner_index]
-		msg = " Receiving..."
+		msg = " " .. (msgs.receiving or "Receiving...")
 		hl_group = "CodeCompanionSpinnerReceiving"
 	elseif self.state == "done" then
 		symbol = ""
-		msg = " Done!"
+		msg = " " .. (msgs.done or "Done!")
 		hl_group = "CodeCompanionSpinnerDone"
 	end
 
-	-- Right-align text by padding
-	local padding = 20 - (#symbol + #msg)
-	local line = string.rep(" ", padding) .. symbol .. msg
+	local total_width = (self.opts.window and self.opts.window.width) or 20
+	local right_padding = (self.opts.window and self.opts.window.padding) or 1
+	local content_width = vim.fn.strdisplaywidth(symbol .. msg)
+	local leading_spaces = total_width - content_width - right_padding
+	local line = string.rep(" ", leading_spaces) .. symbol .. msg .. string.rep(" ", right_padding)
 
 	vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
 
-	-- Apply highlights
 	vim.api.nvim_buf_clear_namespace(buf, self.namespace_id, 0, -1)
+	local symbol_width = vim.fn.strdisplaywidth(symbol)
+	local msg_width = vim.fn.strdisplaywidth(msg)
+
 	if symbol ~= "" then
-		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, padding, {
-			end_col = padding + #symbol,
+		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces, {
+			end_col = leading_spaces + #symbol,
 			hl_group = "CodeCompanionSpinner",
 		})
-		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, padding + #symbol, {
-			end_col = #line,
+		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces + #symbol, {
+			end_col = leading_spaces + #symbol + #msg,
 			hl_group = hl_group,
 		})
 	else
-		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, padding, {
-			end_col = #line,
+		vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces, {
+			end_col = leading_spaces + #msg,
 			hl_group = hl_group,
 		})
 	end
@@ -175,7 +198,6 @@ function M:set_state(state)
 		end
 	elseif state == "done" then
 		self.started = false
-		-- Clear after 2 seconds
 		if self.done_timer then
 			self.done_timer:stop()
 		end
@@ -187,7 +209,6 @@ function M:set_state(state)
 	self:_update_state()
 end
 
--- Compatibility wrappers for old calls
 function M:start()
 	self:set_state("thinking")
 end

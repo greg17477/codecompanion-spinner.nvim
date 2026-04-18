@@ -41,64 +41,11 @@ M.setup = function(opts)
 
   local group = vim.api.nvim_create_augroup("CodeCompanionSpinnerManager", { clear = true })
 
-  -- Lifecycle events
-  vim.api.nvim_create_autocmd("User", {
-    pattern = "CodeCompanionChatCreated",
-    group = group,
-    callback = function(args)
-      log.debug("Event: CodeCompanionChatCreated")
-      local chat_id = get_chat_id(args.data)
-      if chat_id then
-        create_spinner(chat_id, args.buf)
-      end
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("User", {
-    pattern = "CodeCompanionChatClosed",
-    group = group,
-    callback = function(args)
-      log.debug("Event: CodeCompanionChatClosed")
-      local chat_id = get_chat_id(args.data)
-      local spinner = spinners[chat_id]
-      if spinner then
-        spinner:disable()
-        spinners[chat_id] = nil
-      end
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("User", {
-    pattern = "CodeCompanionChatOpened",
-    group = group,
-    callback = function(args)
-      log.debug("Event: CodeCompanionChatOpened")
-      local chat_id = get_chat_id(args.data)
-      local spinner = spinners[chat_id]
-      if not spinner and chat_id then
-        spinner = create_spinner(chat_id, args.buf)
-      end
-      if spinner then
-        spinner:enable()
-      end
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("User", {
-    pattern = "CodeCompanionChatHidden",
-    group = group,
-    callback = function(args)
-      log.debug("Event: CodeCompanionChatHidden")
-      local chat_id = get_chat_id(args.data)
-      local spinner = spinners[chat_id]
-      if spinner then
-        spinner:disable()
-      end
-    end,
-  })
-
-  -- State tracking events
-  local state_events = {
+  local all_events = {
+    "CodeCompanionChatCreated",
+    "CodeCompanionChatClosed",
+    "CodeCompanionChatOpened",
+    "CodeCompanionChatHidden",
     "CodeCompanionRequestStarted",
     "CodeCompanionRequestStreaming",
     "CodeCompanionRequestFinished",
@@ -111,30 +58,56 @@ M.setup = function(opts)
   }
 
   vim.api.nvim_create_autocmd("User", {
-    pattern = state_events,
+    pattern = all_events,
     group = group,
     callback = function(args)
-      log.debug("Event:", args.match)
+      local event = args.match
       local chat_id = get_chat_id(args.data)
+      log.debug("Event:", event, "Chat ID:", chat_id)
+
       local spinner = spinners[chat_id]
 
+      -- Handle spinner creation/lookup
       if not spinner and chat_id then
-        spinner = create_spinner(chat_id, args.buf)
+        -- We create spinners on these events if they don't exist
+        local creation_events = {
+          CodeCompanionChatCreated = true,
+          CodeCompanionChatOpened = true,
+          CodeCompanionRequestStarted = true,
+          CodeCompanionToolStarted = true,
+        }
+        if creation_events[event] then
+          spinner = create_spinner(chat_id, args.buf)
+        end
       end
 
-      if spinner then
-        spinner:handle_event(args.match)
-      else
-        -- Fallback: If chat_id detection fails, try to find a plausible spinner
-        -- This is mostly for streaming events where data might be sparse
-        if args.match == "CodeCompanionRequestStreaming" then
-           for _, s in pairs(spinners) do
-             if s.state == "thinking" then
-               s:handle_event(args.match)
-               return
-             end
-           end
+      -- Fallback for streaming if chat_id detection was sparse
+      if not spinner and event == "CodeCompanionRequestStreaming" then
+        for _, s in pairs(spinners) do
+          if s.state == "thinking" then
+            spinner = s
+            break
+          end
         end
+      end
+
+      if not spinner then
+        return
+      end
+
+      -- Dispatch actions
+      if event == "CodeCompanionChatClosed" then
+        spinner:disable()
+        spinners[chat_id] = nil
+      elseif event == "CodeCompanionChatHidden" then
+        spinner:disable()
+      elseif event == "CodeCompanionChatOpened" then
+        spinner:enable()
+      elseif event == "CodeCompanionChatCreated" then
+        -- Already handled by create_spinner/lookup above
+      else
+        -- All state tracking events
+        spinner:handle_event(event)
       end
     end,
   })

@@ -104,7 +104,7 @@ function M:_get_ui_state()
 end
 
 function M:handle_event(event, data)
-  -- Guard 1: No updates after finished
+  -- Guard: No updates after finished
   if self.req_state == REQ_STATE.FINISHED and event ~= "CodeCompanionRequestStarted" then
     return
   end
@@ -116,12 +116,13 @@ function M:handle_event(event, data)
 
   if event == "CodeCompanionRequestStarted" then
     self.req_state = REQ_STATE.STREAMING
-    self.content_phase = CONTENT_STATE.NONE
+    -- Before response -> "thinking" (Requirement satisfied)
+    self.content_phase = CONTENT_STATE.REASONING
     self.started = true
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
 
-    -- Capture the chunk count at the EXACT start of this request
+    -- Boundary Lock: capture chunk count to ignore old turn data
     if not self.chat_obj then
       local ok, cc = pcall(require, "codecompanion")
       if ok then self.chat_obj = cc.buf_get_chat(self.buffer) end
@@ -195,7 +196,7 @@ function M:_poll_state()
 
   if not self.chat_obj then return end
 
-  -- Boundary Check 1: If no request is running, there is no content phase
+  -- Boundary Check 1: If no request is running, we are effectively idle
   if not self.chat_obj.current_request then
     self.content_phase = CONTENT_STATE.NONE
     return
@@ -204,25 +205,27 @@ function M:_poll_state()
   local builder = self.chat_obj.builder
   if not builder or not builder.state then return end
 
-  -- Boundary Check 2: Only react if chunks have been added since RequestStarted
+  -- Boundary Check 2: Only override "Thinking" if fresh chunks have arrived
   local current_chunks = builder.state.total_chunks or 0
   if current_chunks <= self.start_chunks then
-    self.content_phase = CONTENT_STATE.NONE
+    -- Stay in current phase (Thinking) while waiting for the first token
     return
   end
 
   local block_type = builder.state.current_block_type
   if block_type == "reasoning_message" then
+    -- Reasoning is weak: only active if no response tokens seen yet
     if self.content_phase ~= CONTENT_STATE.RESPONSE then
       self.content_phase = CONTENT_STATE.REASONING
     end
   elseif block_type == "llm_message" then
+    -- Response MUST override reasoning
     self.content_phase = CONTENT_STATE.RESPONSE
   end
 end
 
 function M:_update_text()
-  -- Window Stay-Open Condition: must be active OR tool running OR showing "Done"
+  -- Window Stay-Open Condition
   local should_be_open = self.enabled and (
     self.started
     or self.req_state == REQ_STATE.FINISHED
@@ -241,7 +244,7 @@ function M:_update_text()
 
   local msg, hl_group, is_animated = self:_get_ui_state()
 
-  -- If msg is nil (phase NONE and no overrides), hide the window
+  -- If state is NONE, hide window.
   if not msg then
     self:_close_window()
     return

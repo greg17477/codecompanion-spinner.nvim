@@ -33,6 +33,7 @@ function M:new(chat_id, buffer, opts)
   vim.api.nvim_set_hl(0, "CodeCompanionSpinnerThinking", { link = hl.thinking or "DiagnosticHint", default = true })
   vim.api.nvim_set_hl(0, "CodeCompanionSpinnerReceiving", { link = hl.receiving or "DiagnosticInfo", default = true })
   vim.api.nvim_set_hl(0, "CodeCompanionSpinnerAwaitingApproval", { link = hl.awaiting_approval or "DiagnosticWarn", default = true })
+  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDiffAttached", { link = hl.diff_attached or "DiagnosticWarn", default = true })
   vim.api.nvim_set_hl(0, "CodeCompanionSpinnerToolRunning", { link = hl.tool_running or "DiagnosticHint", default = true })
   vim.api.nvim_set_hl(0, "CodeCompanionSpinnerToolProcessing", { link = hl.tool_processing or "DiagnosticHint", default = true })
   vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDone", { link = hl.done or "DiagnosticOk", default = true })
@@ -133,6 +134,10 @@ function M:_update_text()
     symbol = ""
     msg = " " .. (msgs.awaiting_approval or "Awaiting approval")
     hl_group = "CodeCompanionSpinnerAwaitingApproval"
+  elseif self.state == "diff_attached" then
+    symbol = ""
+    msg = " " .. (msgs.diff_attached or "Diff attached")
+    hl_group = "CodeCompanionSpinnerDiffAttached"
   elseif self.state == "tool_running" then
     self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
     symbol = self.spinner_symbols[self.spinner_index]
@@ -246,9 +251,9 @@ function M:_get_logical_state()
     end
     return "thinking"
   end
-  -- Note: Awaiting approval state is handled explicitly via events in current plugin
-  -- But we can add it here if it's purely counter based.
-  -- For now we stick to how it was + improvements from reference.
+  if c.diff_count > 0 then
+    return "diff_attached"
+  end
   return "idle"
 end
 
@@ -262,6 +267,7 @@ function M:set_state(state)
     -- Reset all counters on completion
     self.counters.request_count = 0
     self.counters.tools_count = 0
+    self.counters.diff_count = 0
     self.counters.is_streaming = false
     self.counters.tools_processing = false
 
@@ -303,6 +309,10 @@ function M:handle_event(event)
   elseif event == "CodeCompanionToolsFinished" then
     c.tools_count = 0
     c.tools_processing = false
+  elseif event == "CodeCompanionDiffAttached" then
+    c.diff_count = c.diff_count + 1
+  elseif event == "CodeCompanionDiffDetached" or event == "CodeCompanionDiffAccepted" or event == "CodeCompanionDiffRejected" then
+    c.diff_count = math.max(0, c.diff_count - 1)
   elseif event == "CodeCompanionToolApprovalRequested" then
     -- Explicitly transition to awaiting_approval
     self:set_state("awaiting_approval")
@@ -314,8 +324,7 @@ function M:handle_event(event)
 
   local new_logical_state = self:_get_logical_state()
 
-  -- If we were in awaiting_approval, any new activity (like request started) should transition us
-  -- Or if the logical state changed, update.
+  -- Handle explicit states vs logical states
   if self.state == "awaiting_approval" then
     if new_logical_state ~= "idle" then
        self:set_state(new_logical_state)
@@ -324,7 +333,7 @@ function M:handle_event(event)
     self:set_state(new_logical_state)
   elseif prev_logical_state ~= "idle" and new_logical_state == "idle" then
     -- Transitioned to idle from something else without a terminal event?
-    -- Usually RequestFinished leads here.
+    -- Usually RequestFinished or ToolsFinished leads here.
     self:set_state("done")
   end
 end

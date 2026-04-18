@@ -13,6 +13,7 @@ M.opts = {
     tool_running = "...tool running",
     tool_processing = "...tool processing",
     awaiting_approval = "󱗿 Awaiting approval",
+    diff_attached = "󰙶 Diff attached",
     done = "󰄬 Done!",
   },
   window = {
@@ -34,6 +35,7 @@ M.opts = {
     thinking = "DiagnosticHint",
     receiving = "DiagnosticInfo",
     awaiting_approval = "DiagnosticWarn",
+    diff_attached = "DiagnosticWarn",
     tool_running = "DiagnosticHint",
     tool_processing = "DiagnosticHint",
     done = "DiagnosticOk",

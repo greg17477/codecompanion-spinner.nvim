@@ -53,6 +53,10 @@ M.setup = function(opts)
     "CodeCompanionToolFinished",
     "CodeCompanionToolsFinished",
     "CodeCompanionToolApprovalRequested",
+    "CodeCompanionDiffAttached",
+    "CodeCompanionDiffDetached",
+    "CodeCompanionDiffAccepted",
+    "CodeCompanionDiffRejected",
     "CodeCompanionChatDone",
     "CodeCompanionChatStopped",
   }
@@ -69,12 +73,13 @@ M.setup = function(opts)
 
       -- Handle spinner creation/lookup
       if not spinner and chat_id then
-        -- We create spinners on these events if they don't exist
         local creation_events = {
           CodeCompanionChatCreated = true,
           CodeCompanionChatOpened = true,
           CodeCompanionRequestStarted = true,
+          CodeCompanionRequestStreaming = true, -- Allow creation on streaming if started was missed
           CodeCompanionToolStarted = true,
+          CodeCompanionDiffAttached = true,
         }
         if creation_events[event] then
           spinner = create_spinner(chat_id, args.buf)
@@ -104,9 +109,9 @@ M.setup = function(opts)
       elseif event == "CodeCompanionChatOpened" then
         spinner:enable()
       elseif event == "CodeCompanionChatCreated" then
-        -- Already handled by create_spinner/lookup above
+        -- Already handled by creation logic above
       else
-        -- All state tracking events
+        -- All state tracking events (including ToolApprovalRequested and ChatDone/Stopped)
         spinner:handle_event(event)
       end
     end,

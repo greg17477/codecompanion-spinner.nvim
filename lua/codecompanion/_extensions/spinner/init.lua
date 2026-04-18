@@ -6,7 +6,7 @@ local codecompanion_spinner = require("codecompanion-spinner")
 local M = {}
 
 function M.setup(opts)
-	codecompanion_spinner.setup(opts)
+  codecompanion_spinner.setup(opts)
 end
 
 return M

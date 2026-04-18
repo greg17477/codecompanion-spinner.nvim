@@ -83,6 +83,16 @@ M.setup = function(opts)
         end
       end
 
+      -- If we still don't have a spinner for a streaming event, try to find the active one
+      if not spinner and event == "CodeCompanionRequestStreaming" then
+         for _, s in pairs(spinners) do
+           if s.req_state == "STREAMING" then
+             spinner = s
+             break
+           end
+         end
+      end
+
       if not spinner then
         return
       end

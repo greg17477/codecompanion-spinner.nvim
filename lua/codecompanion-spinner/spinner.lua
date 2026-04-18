@@ -35,8 +35,9 @@ function M:new(chat_id, buffer, opts)
     tool_phase = TOOL_PHASE.NONE,
     tool_count = 0,
 
-    -- Source of Truth (polling reference)
+    -- Boundary tracking for polling
     chat_obj = nil,
+    start_chunks = 0,
 
     -- Window/Timer management
     timer = nil,
@@ -77,7 +78,7 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. Terminal State (highest override during its phase)
+  -- 1. Terminal State
   if self.req_state == REQ_STATE.FINISHED then
     return msgs.done or "󰄬 Done!", "CodeCompanionSpinnerDone", false
   end
@@ -99,33 +100,39 @@ function M:_get_ui_state()
     end
   end
 
-  -- Idle / None
   return nil, nil, false
 end
 
 function M:handle_event(event, data)
-  local phase_before = self.content_phase
-  log.debug("Spinner", self.chat_id, "EVENT:", event)
-
-  -- Guard 1: No updates after finished (strictly enforced)
+  -- Guard 1: No updates after finished
   if self.req_state == REQ_STATE.FINISHED and event ~= "CodeCompanionRequestStarted" then
     return
   end
 
-  -- Capture chat object if possible
+  -- Robust chat object acquisition
   if data and data.chat then
     self.chat_obj = data.chat
   end
 
   if event == "CodeCompanionRequestStarted" then
     self.req_state = REQ_STATE.STREAMING
-    self.content_phase = CONTENT_STATE.NONE -- Starts at NONE
+    self.content_phase = CONTENT_STATE.NONE
     self.started = true
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
 
+    -- Capture the chunk count at the EXACT start of this request
+    if not self.chat_obj then
+      local ok, cc = pcall(require, "codecompanion")
+      if ok then self.chat_obj = cc.buf_get_chat(self.buffer) end
+    end
+    if self.chat_obj and self.chat_obj.builder and self.chat_obj.builder.state then
+      self.start_chunks = self.chat_obj.builder.state.total_chunks or 0
+    else
+      self.start_chunks = 0
+    end
+
   elseif event == "CodeCompanionRequestStreaming" then
-    -- Guard 2: No implicit stream re-initiation from late events
     if self.req_state ~= REQ_STATE.STREAMING then return end
     self.started = true
 
@@ -155,12 +162,11 @@ function M:handle_event(event, data)
     self:on_stream_end()
   end
 
-  log.debug("Spinner", self.chat_id, "PHASE BEFORE:", phase_before, "PHASE AFTER:", self.content_phase)
   self:_update_timer_state()
 end
 
 function M:on_stream_end()
-  -- FULL RESET TO IDLE
+  -- FULL RESET
   self.req_state = REQ_STATE.FINISHED
   self.content_phase = CONTENT_STATE.NONE
   self.tool_phase = TOOL_PHASE.NONE
@@ -180,49 +186,62 @@ function M:on_stream_end()
   self:_update_timer_state()
 end
 
---- Extract real status from CodeCompanion Chat object
+--- Extract status by comparing builder state against the request start boundary
 function M:_poll_state()
   if not self.chat_obj then
     local ok, cc = pcall(require, "codecompanion")
-    if ok then
-      self.chat_obj = cc.buf_get_chat(self.buffer)
-    end
+    if ok then self.chat_obj = cc.buf_get_chat(self.buffer) end
   end
 
   if not self.chat_obj then return end
 
-  -- Path fix: builder is directly on chat_obj, not inside ui
+  -- Boundary Check 1: If no request is running, there is no content phase
+  if not self.chat_obj.current_request then
+    self.content_phase = CONTENT_STATE.NONE
+    return
+  end
+
   local builder = self.chat_obj.builder
   if not builder or not builder.state then return end
 
-  local block_type = builder.state.current_block_type
+  -- Boundary Check 2: Only react if chunks have been added since RequestStarted
+  local current_chunks = builder.state.total_chunks or 0
+  if current_chunks <= self.start_chunks then
+    self.content_phase = CONTENT_STATE.NONE
+    return
+  end
 
+  local block_type = builder.state.current_block_type
   if block_type == "reasoning_message" then
-    -- Switch to REASONING if not already in RESPONSE
     if self.content_phase ~= CONTENT_STATE.RESPONSE then
       self.content_phase = CONTENT_STATE.REASONING
     end
   elseif block_type == "llm_message" then
-    -- PERMANENT switch to RESPONSE
     self.content_phase = CONTENT_STATE.RESPONSE
   end
 end
 
 function M:_update_text()
-  -- If not active or finished, close window
-  if not (self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED)) then
+  -- Window Stay-Open Condition: must be active OR tool running OR showing "Done"
+  local should_be_open = self.enabled and (
+    self.started
+    or self.req_state == REQ_STATE.FINISHED
+    or self.tool_phase ~= TOOL_PHASE.NONE
+  )
+
+  if not should_be_open then
     self:_close_window()
     return
   end
 
-  -- Polling is the only reliable way to detect block_type changes
+  -- Synchronize state with CodeCompanion internal builder
   if self.req_state == REQ_STATE.STREAMING then
     self:_poll_state()
   end
 
   local msg, hl_group, is_animated = self:_get_ui_state()
 
-  -- Requirement: UI returns "" (empty) when state is NONE
+  -- If msg is nil (phase NONE and no overrides), hide the window
   if not msg then
     self:_close_window()
     return
@@ -377,7 +396,7 @@ function M:_stop_timer()
 end
 
 function M:_update_timer_state()
-  if self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED) then
+  if self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED or self.tool_phase ~= TOOL_PHASE.NONE) then
     self:_start_timer()
   else
     self:_stop_timer()

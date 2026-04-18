@@ -53,6 +53,7 @@ M.setup = function(opts)
     "CodeCompanionToolFinished",
     "CodeCompanionToolsFinished",
     "CodeCompanionToolApprovalRequested",
+    "CodeCompanionToolApprovalFinished",
     "CodeCompanionDiffAttached",
     "CodeCompanionDiffDetached",
     "CodeCompanionDiffAccepted",
@@ -67,8 +68,6 @@ M.setup = function(opts)
     callback = function(args)
       local event = args.match
       local chat_id = get_chat_id(args.data)
-      log.debug("Event:", event, "Chat ID:", chat_id)
-
       local spinner = spinners[chat_id]
 
       -- Handle spinner creation/lookup
@@ -77,22 +76,10 @@ M.setup = function(opts)
           CodeCompanionChatCreated = true,
           CodeCompanionChatOpened = true,
           CodeCompanionRequestStarted = true,
-          CodeCompanionRequestStreaming = true, -- Allow creation on streaming if started was missed
-          CodeCompanionToolStarted = true,
-          CodeCompanionDiffAttached = true,
+          CodeCompanionRequestStreaming = true,
         }
         if creation_events[event] then
           spinner = create_spinner(chat_id, args.buf)
-        end
-      end
-
-      -- Fallback for streaming if chat_id detection was sparse
-      if not spinner and event == "CodeCompanionRequestStreaming" then
-        for _, s in pairs(spinners) do
-          if s.state == "thinking" then
-            spinner = s
-            break
-          end
         end
       end
 
@@ -108,11 +95,9 @@ M.setup = function(opts)
         spinner:disable()
       elseif event == "CodeCompanionChatOpened" then
         spinner:enable()
-      elseif event == "CodeCompanionChatCreated" then
-        -- Already handled by creation logic above
       else
-        -- All state tracking events (including ToolApprovalRequested and ChatDone/Stopped)
-        spinner:handle_event(event)
+        -- Pass the full data payload to the spinner
+        spinner:handle_event(event, args.data)
       end
     end,
   })

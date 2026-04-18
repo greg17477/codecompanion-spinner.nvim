@@ -2,14 +2,43 @@ local log = require("codecompanion-spinner.log")
 
 local M = {}
 
+-- State Dimensions
+local REQ_STATE = {
+  IDLE = "IDLE",
+  STREAMING = "STREAMING",
+  FINISHED = "FINISHED",
+}
+
+local CONTENT_STATE = {
+  NONE = "NONE",
+  REASONING = "REASONING",
+  RESPONSE = "RESPONSE",
+}
+
+local TOOL_PHASE = {
+  NONE = "NONE",
+  RUNNING = "RUNNING",
+  AWAITING_APPROVAL = "AWAITING_APPROVAL",
+}
+
 function M:new(chat_id, buffer, opts)
   local object = {
     chat_id = chat_id,
     buffer = buffer,
     opts = opts or {},
-    started = false,
     enabled = false,
-    state = "idle",
+    started = false,
+
+    -- Internal State Machine
+    req_state = REQ_STATE.IDLE,
+    content_phase = CONTENT_STATE.NONE,
+    tool_phase = TOOL_PHASE.NONE,
+    tool_count = 0,
+
+    -- Source of Truth (polling reference)
+    chat_obj = nil,
+
+    -- Window/Timer management
     timer = nil,
     done_timer = nil,
     win_id = nil,
@@ -17,146 +46,204 @@ function M:new(chat_id, buffer, opts)
     spinner_index = 0,
     spinner_symbols = opts.spinner_symbols or { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
 
-    -- Internal state counters (mirrors reference tracker)
-    counters = {
-      request_count = 0,
-      tools_count = 0,
-      diff_count = 0,
-      is_streaming = false,
-      tools_processing = false,
-    },
+    -- Dirty checking
+    last_ui_msg = nil,
+    last_spinner_index = -1,
   }
 
-  -- Set up highlights
+  -- Set up highlights once
   local hl = object.opts.highlights or {}
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinner", { link = hl.spinner or "DiagnosticError", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerThinking", { link = hl.thinking or "DiagnosticHint", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerReceiving", { link = hl.receiving or "DiagnosticInfo", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerAwaitingApproval", { link = hl.awaiting_approval or "DiagnosticWarn", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDiffAttached", { link = hl.diff_attached or "DiagnosticWarn", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerToolRunning", { link = hl.tool_running or "DiagnosticHint", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerToolProcessing", { link = hl.tool_processing or "DiagnosticHint", default = true })
-  vim.api.nvim_set_hl(0, "CodeCompanionSpinnerDone", { link = hl.done or "DiagnosticOk", default = true })
+  local highlights = {
+    CodeCompanionSpinner = hl.spinner or "DiagnosticError",
+    CodeCompanionSpinnerThinking = hl.thinking or "DiagnosticHint",
+    CodeCompanionSpinnerReceiving = hl.receiving or "DiagnosticInfo",
+    CodeCompanionSpinnerAwaitingApproval = hl.awaiting_approval or "DiagnosticWarn",
+    CodeCompanionSpinnerDiffAttached = hl.diff_attached or "DiagnosticWarn",
+    CodeCompanionSpinnerToolRunning = hl.tool_running or "DiagnosticHint",
+    CodeCompanionSpinnerToolProcessing = hl.tool_processing or "DiagnosticHint",
+    CodeCompanionSpinnerDone = hl.done or "DiagnosticOk",
+  }
+  for group, link in pairs(highlights) do
+    vim.api.nvim_set_hl(0, group, { link = link, default = true })
+  end
 
   self.__index = self
   setmetatable(object, self)
-  log.debug("Spinner", object.chat_id, "created")
   return object
 end
 
-function M:_create_window(width)
-  if self.win_id and vim.api.nvim_win_is_valid(self.win_id) then
-    local s, current_config = pcall(vim.api.nvim_win_get_config, self.win_id)
-    if s and current_config.width ~= width then
-      vim.api.nvim_win_set_width(self.win_id, width)
+--- Derive UI state based on strict priority hierarchy
+--- @return string|nil message, string|nil highlight_group, boolean is_animated
+function M:_get_ui_state()
+  local msgs = self.opts.messages or {}
+
+  -- 1. Terminal State (highest override during its phase)
+  if self.req_state == REQ_STATE.FINISHED then
+    return msgs.done or "󰄬 Done!", "CodeCompanionSpinnerDone", false
+  end
+
+  -- 2. Tool Priority
+  if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
+    return msgs.awaiting_approval or "󱗿 Awaiting approval", "CodeCompanionSpinnerAwaitingApproval", false
+  end
+  if self.tool_phase == TOOL_PHASE.RUNNING then
+    return msgs.tool_running or "...tool running", "CodeCompanionSpinnerToolRunning", true
+  end
+
+  -- 3. Streaming Phase
+  if self.req_state == REQ_STATE.STREAMING then
+    if self.content_phase == CONTENT_STATE.RESPONSE then
+      return msgs.receiving or "...receiving", "CodeCompanionSpinnerReceiving", true
+    elseif self.content_phase == CONTENT_STATE.REASONING then
+      return msgs.thinking or "...thinking", "CodeCompanionSpinnerThinking", true
     end
+  end
+
+  -- Idle / None
+  return nil, nil, false
+end
+
+function M:handle_event(event, data)
+  local phase_before = self.content_phase
+  log.debug("Spinner", self.chat_id, "EVENT:", event)
+
+  -- Guard 1: No updates after finished (strictly enforced)
+  if self.req_state == REQ_STATE.FINISHED and event ~= "CodeCompanionRequestStarted" then
     return
   end
 
-  local chat_win_id = nil
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_get_buf(win) == self.buffer then
-      chat_win_id = win
-      break
+  -- Capture chat object if possible
+  if data and data.chat then
+    self.chat_obj = data.chat
+  end
+
+  if event == "CodeCompanionRequestStarted" then
+    self.req_state = REQ_STATE.STREAMING
+    self.content_phase = CONTENT_STATE.NONE -- Starts at NONE
+    self.started = true
+    self.tool_phase = TOOL_PHASE.NONE
+    self.tool_count = 0
+
+  elseif event == "CodeCompanionRequestStreaming" then
+    -- Guard 2: No implicit stream re-initiation from late events
+    if self.req_state ~= REQ_STATE.STREAMING then return end
+    self.started = true
+
+  elseif event == "CodeCompanionToolStarted" then
+    self.tool_count = self.tool_count + 1
+    self.tool_phase = TOOL_PHASE.RUNNING
+    self.started = true
+
+  elseif event == "CodeCompanionToolFinished" then
+    self.tool_count = math.max(0, self.tool_count - 1)
+    if self.tool_count == 0 then
+      self.tool_phase = TOOL_PHASE.NONE
+    end
+
+  elseif event == "CodeCompanionToolsFinished" then
+    self.tool_count = 0
+    self.tool_phase = TOOL_PHASE.NONE
+
+  elseif event == "CodeCompanionToolApprovalRequested" then
+    self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
+    self.started = true
+
+  elseif event == "CodeCompanionToolApprovalFinished" then
+    self.tool_phase = self.tool_count > 0 and TOOL_PHASE.RUNNING or TOOL_PHASE.NONE
+
+  elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
+    self:on_stream_end()
+  end
+
+  log.debug("Spinner", self.chat_id, "PHASE BEFORE:", phase_before, "PHASE AFTER:", self.content_phase)
+  self:_update_timer_state()
+end
+
+function M:on_stream_end()
+  -- FULL RESET TO IDLE
+  self.req_state = REQ_STATE.FINISHED
+  self.content_phase = CONTENT_STATE.NONE
+  self.tool_phase = TOOL_PHASE.NONE
+  self.tool_count = 0
+  self.started = false
+
+  if self.done_timer then
+    self.done_timer:stop()
+  end
+
+  self.done_timer = vim.defer_fn(function()
+    self.req_state = REQ_STATE.IDLE
+    self.chat_obj = nil
+    self:_update_timer_state()
+  end, self.opts.done_timer or 2000)
+
+  self:_update_timer_state()
+end
+
+--- Extract real status from CodeCompanion Chat object
+function M:_poll_state()
+  if not self.chat_obj then
+    local ok, cc = pcall(require, "codecompanion")
+    if ok then
+      self.chat_obj = cc.buf_get_chat(self.buffer)
     end
   end
 
-  if not chat_win_id then
-    return
-  end
+  if not self.chat_obj then return end
 
-  local win_config = self.opts.window or {}
-  local height = win_config.height or 1
-  local win_width = vim.api.nvim_win_get_width(chat_win_id)
-  local win_height = vim.api.nvim_win_get_height(chat_win_id)
+  -- Path fix: builder is directly on chat_obj, not inside ui
+  local builder = self.chat_obj.builder
+  if not builder or not builder.state then return end
 
-  local row = win_config.row or -2
-  if row < 0 then
-    row = math.max(0, win_height + row)
-  end
+  local block_type = builder.state.current_block_type
 
-  local col = win_config.col or -1
-  if col < 0 then
-    col = math.max(0, win_width - width + (col + 1))
-  end
-
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
-
-  local s, win_id = pcall(vim.api.nvim_open_win, buf, false, {
-    relative = "win",
-    win = chat_win_id,
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    zindex = win_config.zindex or 1000,
-    border = win_config.border or "none",
-    style = "minimal",
-    focusable = win_config.focusable or false,
-    noautocmd = win_config.noautocmd ~= false,
-  })
-
-  if s then
-    self.win_id = win_id
-  else
-    log.error("Failed to open spinner window: " .. tostring(win_id))
-    return
-  end
-  vim.wo[self.win_id].winblend = win_config.winblend or 10
-  if win_config.winhl then
-    vim.wo[self.win_id].winhighlight = win_config.winhl
+  if block_type == "reasoning_message" then
+    -- Switch to REASONING if not already in RESPONSE
+    if self.content_phase ~= CONTENT_STATE.RESPONSE then
+      self.content_phase = CONTENT_STATE.REASONING
+    end
+  elseif block_type == "llm_message" then
+    -- PERMANENT switch to RESPONSE
+    self.content_phase = CONTENT_STATE.RESPONSE
   end
 end
 
 function M:_update_text()
-  if not (self.enabled and self.started) and self.state ~= "done" then
+  -- If not active or finished, close window
+  if not (self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED)) then
     self:_close_window()
     return
   end
 
-  local msg = ""
-  local symbol = ""
-  local hl_group = ""
-  local msgs = self.opts.messages or {}
-
-  if self.state == "thinking" then
-    self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
-    symbol = self.spinner_symbols[self.spinner_index]
-    msg = " " .. (msgs.thinking or "Thinking...")
-    hl_group = "CodeCompanionSpinnerThinking"
-  elseif self.state == "receiving" then
-    self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
-    symbol = self.spinner_symbols[self.spinner_index]
-    msg = " " .. (msgs.receiving or "Receiving...")
-    hl_group = "CodeCompanionSpinnerReceiving"
-  elseif self.state == "awaiting_approval" then
-    symbol = ""
-    msg = " " .. (msgs.awaiting_approval or "Awaiting approval")
-    hl_group = "CodeCompanionSpinnerAwaitingApproval"
-  elseif self.state == "diff_attached" then
-    symbol = ""
-    msg = " " .. (msgs.diff_attached or "Diff attached")
-    hl_group = "CodeCompanionSpinnerDiffAttached"
-  elseif self.state == "tool_running" then
-    self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
-    symbol = self.spinner_symbols[self.spinner_index]
-    msg = " " .. (msgs.tool_running or "Tool running...")
-    hl_group = "CodeCompanionSpinnerToolRunning"
-  elseif self.state == "tool_processing" then
-    self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
-    symbol = self.spinner_symbols[self.spinner_index]
-    msg = " " .. (msgs.tool_processing or "Tool processing...")
-    hl_group = "CodeCompanionSpinnerToolProcessing"
-  elseif self.state == "done" then
-    symbol = ""
-    msg = " " .. (msgs.done or "Done!")
-    hl_group = "CodeCompanionSpinnerDone"
+  -- Polling is the only reliable way to detect block_type changes
+  if self.req_state == REQ_STATE.STREAMING then
+    self:_poll_state()
   end
 
-  local total_width = (self.opts.window and self.opts.window.width) or 20
-  local right_padding = (self.opts.window and self.opts.window.padding) or 1
-  local content_width = vim.fn.strdisplaywidth(symbol .. msg)
+  local msg, hl_group, is_animated = self:_get_ui_state()
+
+  -- Requirement: UI returns "" (empty) when state is NONE
+  if not msg then
+    self:_close_window()
+    return
+  end
+
+  if is_animated then
+    self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
+  end
+
+  -- Dirty check
+  if msg == self.last_ui_msg and self.spinner_index == self.last_spinner_index then
+    return
+  end
+
+  local symbol = is_animated and self.spinner_symbols[self.spinner_index] or ""
+  local display_text = " " .. msg
+  local full_text = symbol .. display_text
+
+  local total_width = self.opts.window.width or 20
+  local right_padding = self.opts.window.padding or 1
+  local content_width = vim.fn.strdisplaywidth(full_text)
   local required_width = content_width + right_padding
 
   if required_width > total_width then
@@ -171,10 +258,9 @@ function M:_update_text()
 
   local buf = vim.api.nvim_win_get_buf(self.win_id)
   local leading_spaces = math.max(0, total_width - content_width - right_padding)
-  local line = string.rep(" ", leading_spaces) .. symbol .. msg .. string.rep(" ", right_padding)
+  local line = string.rep(" ", leading_spaces) .. full_text .. string.rep(" ", right_padding)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
-
   vim.api.nvim_buf_clear_namespace(buf, self.namespace_id, 0, -1)
 
   if symbol ~= "" then
@@ -183,14 +269,81 @@ function M:_update_text()
       hl_group = "CodeCompanionSpinner",
     })
     vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces + #symbol, {
-      end_col = leading_spaces + #symbol + #msg,
+      end_col = leading_spaces + #symbol + #display_text,
       hl_group = hl_group,
     })
   else
     vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces, {
-      end_col = leading_spaces + #msg,
+      end_col = leading_spaces + #display_text,
       hl_group = hl_group,
     })
+  end
+
+  self.last_ui_msg = msg
+  self.last_spinner_index = self.spinner_index
+end
+
+function M:_get_chat_win_id()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == self.buffer then
+      return win
+    end
+  end
+  return nil
+end
+
+function M:_create_window(width)
+  local chat_win_id = self:_get_chat_win_id()
+  if not chat_win_id then
+    return
+  end
+
+  local win_config = self.opts.window or {}
+  local win_width = vim.api.nvim_win_get_width(chat_win_id)
+  local win_height = vim.api.nvim_win_get_height(chat_win_id)
+
+  local row = win_config.row or -2
+  if row < 0 then
+    row = math.max(0, win_height + row)
+  end
+
+  local col = win_config.col or -1
+  if col < 0 then
+    col = math.max(0, win_width - width + (col + 1))
+  end
+
+  local config = {
+    relative = "win",
+    win = chat_win_id,
+    width = width,
+    height = win_config.height or 1,
+    row = row,
+    col = col,
+    zindex = win_config.zindex or 1000,
+    border = win_config.border or "none",
+    style = "minimal",
+    focusable = win_config.focusable or false,
+    noautocmd = win_config.noautocmd ~= false,
+  }
+
+  if self.win_id and vim.api.nvim_win_is_valid(self.win_id) then
+    pcall(vim.api.nvim_win_set_config, self.win_id, config)
+    return
+  end
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
+
+  local s, win_id = pcall(vim.api.nvim_open_win, buf, false, config)
+
+  if s then
+    self.win_id = win_id
+    vim.api.nvim_set_option_value("winblend", win_config.winblend or 10, { win = self.win_id })
+    if win_config.winhl then
+      vim.api.nvim_set_option_value("winhighlight", win_config.winhl, { win = self.win_id })
+    end
+  else
+    log.error("Failed to open spinner window: " .. tostring(win_id))
   end
 end
 
@@ -199,6 +352,8 @@ function M:_close_window()
     vim.api.nvim_win_close(self.win_id, true)
     self.win_id = nil
   end
+  self.last_ui_msg = nil
+  self.last_spinner_index = -1
 end
 
 function M:_start_timer()
@@ -210,7 +365,6 @@ function M:_start_timer()
   end)
   self.timer = vim.uv.new_timer()
   self.timer:start(0, 100, timer_fn)
-  log.debug("Spinner", self.chat_id, "timer started")
 end
 
 function M:_stop_timer()
@@ -220,121 +374,14 @@ function M:_stop_timer()
   self.timer:stop()
   self.timer:close()
   self.timer = nil
-  log.debug("Spinner", self.chat_id, "timer stopped")
 end
 
 function M:_update_timer_state()
-  if self.enabled and self.started then
+  if self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED) then
     self:_start_timer()
-  elseif self.state == "done" then
-    self:_stop_timer()
-    self:_update_text()
   else
     self:_stop_timer()
     self:_close_window()
-  end
-end
-
---- Determines the logical state based on counters.
---- @return string
-function M:_get_logical_state()
-  local c = self.counters
-  if c.tools_processing then
-    return "tool_processing"
-  end
-  if c.tools_count > 0 then
-    return "tool_running"
-  end
-  if c.request_count > 0 then
-    if c.is_streaming then
-      return "receiving"
-    end
-    return "thinking"
-  end
-  if c.diff_count > 0 then
-    return "diff_attached"
-  end
-  return "idle"
-end
-
-function M:set_state(state)
-  log.debug("Spinner", self.chat_id, "explicit state transition to:", state)
-  self.state = state
-  if state == "idle" or state == "none" then
-    self.started = false
-  elseif state == "done" then
-    self.started = false
-    -- Reset all counters on completion
-    self.counters.request_count = 0
-    self.counters.tools_count = 0
-    self.counters.diff_count = 0
-    self.counters.is_streaming = false
-    self.counters.tools_processing = false
-
-    if self.done_timer then
-      self.done_timer:stop()
-    end
-    self.done_timer = vim.defer_fn(function()
-      self.state = "idle"
-      self:_update_timer_state()
-    end, self.opts.done_timer or 2000)
-  else
-    self.started = true
-    if self.done_timer then
-      self.done_timer:stop()
-      self.done_timer = nil
-    end
-  end
-  self:_update_timer_state()
-end
-
-function M:handle_event(event)
-  local c = self.counters
-  local prev_logical_state = self:_get_logical_state()
-
-  if event == "CodeCompanionRequestStarted" then
-    c.request_count = c.request_count + 1
-  elseif event == "CodeCompanionRequestStreaming" then
-    c.is_streaming = true
-  elseif event == "CodeCompanionRequestFinished" then
-    c.request_count = math.max(0, c.request_count - 1)
-    c.is_streaming = false
-  elseif event == "CodeCompanionToolStarted" then
-    c.tools_count = c.tools_count + 1
-  elseif event == "CodeCompanionToolFinished" then
-    c.tools_count = math.max(0, c.tools_count - 1)
-    if c.tools_count == 0 then
-      c.tools_processing = true
-    end
-  elseif event == "CodeCompanionToolsFinished" then
-    c.tools_count = 0
-    c.tools_processing = false
-  elseif event == "CodeCompanionDiffAttached" then
-    c.diff_count = c.diff_count + 1
-  elseif event == "CodeCompanionDiffDetached" or event == "CodeCompanionDiffAccepted" or event == "CodeCompanionDiffRejected" then
-    c.diff_count = math.max(0, c.diff_count - 1)
-  elseif event == "CodeCompanionToolApprovalRequested" then
-    -- Explicitly transition to awaiting_approval
-    self:set_state("awaiting_approval")
-    return
-  elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
-    self:set_state("done")
-    return
-  end
-
-  local new_logical_state = self:_get_logical_state()
-
-  -- Handle explicit states vs logical states
-  if self.state == "awaiting_approval" then
-    if new_logical_state ~= "idle" then
-       self:set_state(new_logical_state)
-    end
-  elseif new_logical_state ~= "idle" then
-    self:set_state(new_logical_state)
-  elseif prev_logical_state ~= "idle" and new_logical_state == "idle" then
-    -- Transitioned to idle from something else without a terminal event?
-    -- Usually RequestFinished or ToolsFinished leads here.
-    self:set_state("done")
   end
 end
 

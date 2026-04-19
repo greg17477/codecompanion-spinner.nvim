@@ -84,12 +84,7 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. Terminal State (Highest priority for completion feedback)
-  if self.req_state == REQ_STATE.FINISHED then
-    return msgs.done, "CodeCompanionSpinnerDone", false
-  end
-
-  -- 2. Tool & User Interaction Priority
+  -- 1. User Interaction Priority (Action required)
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
     return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
   end
@@ -98,15 +93,12 @@ function M:_get_ui_state()
     return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
   end
 
+  -- 2. Active Work Priority
   if self.tool_phase == TOOL_PHASE.RUNNING then
     return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
-  if self.tool_phase == TOOL_PHASE.PROCESSING then
-    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
-  end
-
-  -- 3. Streaming Phase
+  -- 3. Streaming Phase (includes reasoning/thinking)
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "CodeCompanionSpinnerReceiving", true
@@ -114,6 +106,16 @@ function M:_get_ui_state()
       -- Default to thinking if streaming but not yet in response
       return msgs.thinking, "CodeCompanionSpinnerThinking", true
     end
+  end
+
+  -- 4. Background Processing
+  if self.tool_phase == TOOL_PHASE.PROCESSING then
+    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
+  end
+
+  -- 5. Terminal State (Lowest priority)
+  if self.req_state == REQ_STATE.FINISHED then
+    return msgs.done, "CodeCompanionSpinnerDone", false
   end
 
   return nil, nil, false
@@ -141,6 +143,12 @@ function M:handle_event(event, data)
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
     self.diff_attached = false
+
+    -- Clear any pending idle transition
+    if self.done_timer then
+      self.done_timer:stop()
+      self.done_timer = nil
+    end
 
     -- Boundary Lock: capture chunk count to ignore old turn data
     if not self.chat_obj then
@@ -203,20 +211,19 @@ function M:handle_event(event, data)
 end
 
 function M:on_stream_end()
-  -- FULL RESET
   self.req_state = REQ_STATE.FINISHED
   self.content_phase = CONTENT_STATE.NONE
-  self.tool_phase = TOOL_PHASE.NONE
-  self.tool_count = 0
   self.started = false
-  self.diff_attached = false
 
   if self.done_timer then
     self.done_timer:stop()
   end
 
   self.done_timer = vim.defer_fn(function()
-    self.req_state = REQ_STATE.IDLE
+    -- Only transition to IDLE if no other active processes are running
+    if self.tool_phase == TOOL_PHASE.NONE and not self.diff_attached then
+      self.req_state = REQ_STATE.IDLE
+    end
     self.chat_obj = nil
     self:_update_timer_state()
   end, self.opts.done_timer)
@@ -252,7 +259,7 @@ function M:_poll_state()
   local block_type = builder.state.current_block_type
   if block_type == "reasoning_message" then
     self.content_phase = CONTENT_STATE.REASONING
-  elseif block_type == "llm_message" then
+  elseif block_type == "llm_message" or block_type == "tool_use" then
     self.content_phase = CONTENT_STATE.RESPONSE
   end
 end

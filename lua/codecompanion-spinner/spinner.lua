@@ -93,7 +93,7 @@ function M:_get_ui_state()
   end
 
   if self.diff_attached then
-    return msgs.awaiting_approval, "CodeCompanionSpinnerDiffAttached", false
+    return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
   end
 
   -- 2. Active Tool Work
@@ -111,8 +111,12 @@ function M:_get_ui_state()
   end
 
   -- 4. Tool Processing
-  -- If tool has just finished but chat hasn't ended, or we explicitly know a tool was called
-  if self.tool_phase == TOOL_PHASE.PROCESSING or (self.req_state == REQ_STATE.FINISHED and self.has_tool_call) then
+  -- Show processing if a tool is active, just finished, or we're between turns with tools
+  if
+    self.tool_phase == TOOL_PHASE.PROCESSING
+    or self.tool_count > 0
+    or (self.req_state == REQ_STATE.FINISHED and self.has_tool_call)
+  then
     return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
   end
 
@@ -130,7 +134,9 @@ end
 
 function M:_clear_done_timer()
   if self.done_timer then
-    pcall(function() self.done_timer:stop() end)
+    pcall(function()
+      self.done_timer:stop()
+    end)
     self.done_timer = nil
   end
 end
@@ -170,60 +176,62 @@ function M:handle_event(event, data)
     -- Boundary Lock: capture chunk count to ignore old turn data
     if not self.chat_obj then
       local ok, cc = pcall(require, "codecompanion")
-      if ok then self.chat_obj = cc.buf_get_chat(self.buffer) end
+      if ok then
+        self.chat_obj = cc.buf_get_chat(self.buffer)
+      end
     end
     if self.chat_obj and self.chat_obj.builder and self.chat_obj.builder.state then
       self.start_chunks = self.chat_obj.builder.state.total_chunks or 0
     else
       self.start_chunks = 0
     end
-
   elseif event == "CodeCompanionRequestStreaming" then
     if self.req_state ~= REQ_STATE.STREAMING then
       self.req_state = REQ_STATE.STREAMING
     end
     self.started = true
-
   elseif event == "CodeCompanionRequestFinished" then
+    -- Ensure we have the absolute latest state before finishing the turn
+    self:_poll_state()
     -- Treat end of turn similar to end of chat to show "Done!" briefly
     self:on_stream_end(REQ_STATE.FINISHED)
-
   elseif event == "CodeCompanionToolStarted" then
     self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
     self.tool_phase = TOOL_PHASE.RUNNING
+    self.has_tool_call = true
     self.started = true
-
   elseif event == "CodeCompanionToolFinished" then
     self.tool_count = math.max(0, self.tool_count - 1)
     if self.tool_count == 0 then
       self.tool_phase = TOOL_PHASE.PROCESSING
     end
-
   elseif event == "CodeCompanionToolsFinished" then
     self.tool_count = 0
     self.tool_phase = TOOL_PHASE.PROCESSING
-
+    self.has_tool_call = true
   elseif event == "CodeCompanionToolApprovalRequested" then
     self:_clear_done_timer()
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
+    self.has_tool_call = true
     self.started = true
-
   elseif event == "CodeCompanionToolApprovalFinished" then
     if self.tool_count > 0 then
       self.tool_phase = TOOL_PHASE.RUNNING
     else
-      self.tool_phase = TOOL_PHASE.NONE
+      -- Bridge state to prevent flash of "Done"
+      self.tool_phase = TOOL_PHASE.PROCESSING
     end
-
   elseif event == "CodeCompanionDiffAttached" then
     self:_clear_done_timer()
     self.diff_attached = true
     self.started = true
-
-  elseif event == "CodeCompanionDiffDetached" or event == "CodeCompanionDiffAccepted" or event == "CodeCompanionDiffRejected" then
+  elseif
+    event == "CodeCompanionDiffDetached"
+    or event == "CodeCompanionDiffAccepted"
+    or event == "CodeCompanionDiffRejected"
+  then
     self.diff_attached = false
-
   elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
     self.is_stopped = (event == "CodeCompanionChatStopped")
     self.tool_phase = TOOL_PHASE.NONE

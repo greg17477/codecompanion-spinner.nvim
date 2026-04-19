@@ -18,6 +18,7 @@ local CONTENT_STATE = {
 local TOOL_PHASE = {
   NONE = "NONE",
   RUNNING = "RUNNING",
+  PROCESSING = "PROCESSING",
   AWAITING_APPROVAL = "AWAITING_APPROVAL",
 }
 
@@ -83,12 +84,12 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. Terminal State
+  -- 1. Terminal State (Highest priority for completion feedback)
   if self.req_state == REQ_STATE.FINISHED then
     return msgs.done, "CodeCompanionSpinnerDone", false
   end
 
-  -- 2. Tool Priority
+  -- 2. Tool & User Interaction Priority
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
     return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
   end
@@ -101,11 +102,16 @@ function M:_get_ui_state()
     return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
+  if self.tool_phase == TOOL_PHASE.PROCESSING then
+    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
+  end
+
   -- 3. Streaming Phase
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "CodeCompanionSpinnerReceiving", true
-    elseif self.content_phase == CONTENT_STATE.REASONING then
+    else
+      -- Default to thinking if streaming but not yet in response
       return msgs.thinking, "CodeCompanionSpinnerThinking", true
     end
   end
@@ -114,9 +120,12 @@ function M:_get_ui_state()
 end
 
 function M:handle_event(event, data)
-  -- Guard: No updates after finished
+  -- Guard: Only specific events can break out of FINISHED
   if self.req_state == REQ_STATE.FINISHED and event ~= "CodeCompanionRequestStarted" then
-    return
+    -- Allow tool events even if request is technically finished (common for agentic turns)
+    if not (event:match("Tool") or event:match("Diff")) then
+      return
+    end
   end
 
   -- Robust chat object acquisition
@@ -145,8 +154,13 @@ function M:handle_event(event, data)
     end
 
   elseif event == "CodeCompanionRequestStreaming" then
-    if self.req_state ~= REQ_STATE.STREAMING then return end
+    if self.req_state ~= REQ_STATE.STREAMING then
+      self.req_state = REQ_STATE.STREAMING
+    end
     self.started = true
+
+  elseif event == "CodeCompanionRequestFinished" then
+    self:on_stream_end()
 
   elseif event == "CodeCompanionToolStarted" then
     self.tool_count = self.tool_count + 1
@@ -156,7 +170,7 @@ function M:handle_event(event, data)
   elseif event == "CodeCompanionToolFinished" then
     self.tool_count = math.max(0, self.tool_count - 1)
     if self.tool_count == 0 then
-      self.tool_phase = TOOL_PHASE.NONE
+      self.tool_phase = TOOL_PHASE.PROCESSING
     end
 
   elseif event == "CodeCompanionToolsFinished" then
@@ -168,7 +182,11 @@ function M:handle_event(event, data)
     self.started = true
 
   elseif event == "CodeCompanionToolApprovalFinished" then
-    self.tool_phase = self.tool_count > 0 and TOOL_PHASE.RUNNING or TOOL_PHASE.NONE
+    if self.tool_count > 0 then
+      self.tool_phase = TOOL_PHASE.RUNNING
+    else
+      self.tool_phase = TOOL_PHASE.NONE
+    end
 
   elseif event == "CodeCompanionDiffAttached" then
     self.diff_attached = true
@@ -233,12 +251,8 @@ function M:_poll_state()
 
   local block_type = builder.state.current_block_type
   if block_type == "reasoning_message" then
-    -- Reasoning is weak: only active if no response tokens seen yet
-    if self.content_phase ~= CONTENT_STATE.RESPONSE then
-      self.content_phase = CONTENT_STATE.REASONING
-    end
+    self.content_phase = CONTENT_STATE.REASONING
   elseif block_type == "llm_message" then
-    -- Response MUST override reasoning
     self.content_phase = CONTENT_STATE.RESPONSE
   end
 end

@@ -100,5 +100,6 @@ The spinner uses the following highlight groups. You can override them in your c
 
 ## 🙏 Acknowledgements
 
+- [franco-ruggeri](https://github.com/franco-ruggeri) for the original [codecompanion-spinner](https://github.com/franco-ruggeri/codecompanion-spinner.nvim).
 - [yuhua99](https://github.com/yuhua99) for the original [spinner logic](https://github.com/olimorris/codecompanion.nvim/discussions/640#discussioncomment-12866279).
 - [olimorris](https://github.com/olimorris) for the excellent [codecompanion.nvim](https://github.com/olimorris/codecompanion.nvim).

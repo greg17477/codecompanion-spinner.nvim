@@ -94,7 +94,12 @@ function M:_get_ui_state()
     return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
   end
 
-  -- 2. Streaming Phase (Highest activity priority)
+  -- 2. Active Work Priority
+  if self.tool_phase == TOOL_PHASE.RUNNING then
+    return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
+  end
+
+  -- 3. Streaming Phase
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "CodeCompanionSpinnerReceiving", true
@@ -104,12 +109,7 @@ function M:_get_ui_state()
     end
   end
 
-  -- 3. Active Work Priority
-  if self.tool_phase == TOOL_PHASE.RUNNING then
-    return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
-  end
-
-  -- 4. Background Processing
+  -- 4. Background Processing (Post-tool/pre-stream or final)
   if self.tool_phase == TOOL_PHASE.PROCESSING then
     return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
   end
@@ -151,7 +151,7 @@ function M:handle_event(event, data)
 
     -- Clear any pending idle transition
     if self.done_timer then
-      self.done_timer:stop()
+      pcall(function() self.done_timer:stop() end)
       self.done_timer = nil
     end
 
@@ -220,11 +220,11 @@ function M:handle_event(event, data)
       self:on_stream_end()
     end
 
-  elseif event == "CodeCompanionChatDone" then
-    self.is_stopped = false
-    self:on_stream_end()
-  elseif event == "CodeCompanionChatStopped" then
-    self.is_stopped = true
+  elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
+    self.is_stopped = (event == "CodeCompanionChatStopped")
+    self.tool_phase = TOOL_PHASE.NONE
+    self.tool_count = 0
+    self.diff_attached = false
     self:on_stream_end()
   end
 
@@ -237,15 +237,16 @@ function M:on_stream_end()
   self.started = false
 
   if self.done_timer then
-    self.done_timer:stop()
+    pcall(function() self.done_timer:stop() end)
   end
 
   self.done_timer = vim.defer_fn(function()
-    -- Only transition to IDLE if no other active processes are running
-    if self.tool_phase == TOOL_PHASE.NONE and not self.diff_attached then
-      self.req_state = REQ_STATE.IDLE
-    end
+    -- Force transition to IDLE after the timeout
+    self.req_state = REQ_STATE.IDLE
+    self.tool_phase = TOOL_PHASE.NONE
+    self.diff_attached = false
     self.chat_obj = nil
+    self.done_timer = nil
     self:_update_timer_state()
   end, self.opts.done_timer)
 

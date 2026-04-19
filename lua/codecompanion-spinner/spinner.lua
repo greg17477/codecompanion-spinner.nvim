@@ -6,7 +6,8 @@ local M = {}
 local REQ_STATE = {
   IDLE = "IDLE",
   STREAMING = "STREAMING",
-  FINISHED = "FINISHED",
+  FINISHED = "FINISHED", -- Turn/Request finished, but chat continues
+  DONE = "DONE", -- Entire interaction finished
 }
 
 local CONTENT_STATE = {
@@ -99,23 +100,22 @@ function M:_get_ui_state()
     return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
-  -- 3. Streaming Phase
-  if self.req_state == REQ_STATE.STREAMING then
-    if self.content_phase == CONTENT_STATE.RESPONSE then
-      return msgs.receiving, "CodeCompanionSpinnerReceiving", true
-    else
-      -- Default to thinking if streaming but not yet in response
-      return msgs.thinking, "CodeCompanionSpinnerThinking", true
-    end
-  end
-
-  -- 4. Background Processing (Post-tool/pre-stream or final)
   if self.tool_phase == TOOL_PHASE.PROCESSING then
     return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
   end
 
-  -- 5. Terminal State (Lowest priority)
-  if self.req_state == REQ_STATE.FINISHED then
+  -- 3. Active Stream or Turn Transition Phase
+  if self.req_state == REQ_STATE.STREAMING then
+    -- Default to stream status
+    if self.content_phase == CONTENT_STATE.RESPONSE then
+      return msgs.receiving, "CodeCompanionSpinnerReceiving", true
+    end
+    -- Fallback to thinking for any other active state
+    return msgs.thinking, "CodeCompanionSpinnerThinking", true
+  end
+
+  -- 4. Terminal State (Lowest priority)
+  if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
     if self.is_stopped then
       return msgs.stopped or msgs.done, "CodeCompanionSpinnerDone", false
     end
@@ -125,11 +125,24 @@ function M:_get_ui_state()
   return nil, nil, false
 end
 
+function M:_clear_done_timer()
+  if self.done_timer then
+    pcall(function() self.done_timer:stop() end)
+    self.done_timer = nil
+  end
+end
+
 function M:handle_event(event, data)
-  -- Guard: Only specific events can break out of FINISHED
-  if self.req_state == REQ_STATE.FINISHED and event ~= "CodeCompanionRequestStarted" then
-    -- Allow tool events even if request is technically finished (common for agentic turns)
-    if not (event:match("Tool") or event:match("Diff") or event:match("Chat")) then
+  -- Guard: Prevent late or out-of-order events from re-activating the spinner
+  if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.IDLE then
+    local wake_up_events = {
+      CodeCompanionRequestStarted = true,
+      CodeCompanionToolStarted = true,
+      CodeCompanionToolApprovalRequested = true,
+      CodeCompanionDiffAttached = true,
+    }
+    -- Only specific events can wake us from a terminal state
+    if not wake_up_events[event] and not event:match("Chat") then
       return
     end
   end
@@ -140,6 +153,7 @@ function M:handle_event(event, data)
   end
 
   if event == "CodeCompanionRequestStarted" then
+    self:_clear_done_timer()
     self.req_state = REQ_STATE.STREAMING
     -- Before response -> "thinking" (Requirement satisfied)
     self.content_phase = CONTENT_STATE.REASONING
@@ -148,12 +162,6 @@ function M:handle_event(event, data)
     self.tool_count = 0
     self.diff_attached = false
     self.is_stopped = false
-
-    -- Clear any pending idle transition
-    if self.done_timer then
-      pcall(function() self.done_timer:stop() end)
-      self.done_timer = nil
-    end
 
     -- Boundary Lock: capture chunk count to ignore old turn data
     if not self.chat_obj then
@@ -173,9 +181,11 @@ function M:handle_event(event, data)
     self.started = true
 
   elseif event == "CodeCompanionRequestFinished" then
-    self:on_stream_end()
+    -- Treat end of turn similar to end of chat to show "Done!" briefly
+    self:on_stream_end(REQ_STATE.FINISHED)
 
   elseif event == "CodeCompanionToolStarted" then
+    self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
     self.tool_phase = TOOL_PHASE.RUNNING
     self.started = true
@@ -185,18 +195,13 @@ function M:handle_event(event, data)
     if self.tool_count == 0 then
       self.tool_phase = TOOL_PHASE.PROCESSING
     end
-    if self.req_state == REQ_STATE.FINISHED then
-      self:on_stream_end()
-    end
 
   elseif event == "CodeCompanionToolsFinished" then
     self.tool_count = 0
-    self.tool_phase = TOOL_PHASE.NONE
-    if self.req_state == REQ_STATE.FINISHED then
-      self:on_stream_end()
-    end
+    self.tool_phase = TOOL_PHASE.PROCESSING
 
   elseif event == "CodeCompanionToolApprovalRequested" then
+    self:_clear_done_timer()
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
     self.started = true
 
@@ -206,48 +211,45 @@ function M:handle_event(event, data)
     else
       self.tool_phase = TOOL_PHASE.NONE
     end
-    if self.req_state == REQ_STATE.FINISHED then
-      self:on_stream_end()
-    end
 
   elseif event == "CodeCompanionDiffAttached" then
+    self:_clear_done_timer()
     self.diff_attached = true
     self.started = true
 
   elseif event == "CodeCompanionDiffDetached" or event == "CodeCompanionDiffAccepted" or event == "CodeCompanionDiffRejected" then
     self.diff_attached = false
-    if self.req_state == REQ_STATE.FINISHED then
-      self:on_stream_end()
-    end
 
   elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
     self.is_stopped = (event == "CodeCompanionChatStopped")
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
     self.diff_attached = false
-    self:on_stream_end()
+    self:on_stream_end(REQ_STATE.DONE)
   end
 
   self:_update_timer_state()
 end
 
-function M:on_stream_end()
-  self.req_state = REQ_STATE.FINISHED
+function M:on_stream_end(state)
+  self.req_state = state or REQ_STATE.DONE
   self.content_phase = CONTENT_STATE.NONE
   self.started = false
 
-  if self.done_timer then
-    pcall(function() self.done_timer:stop() end)
-  end
+  self:_clear_done_timer()
 
   self.done_timer = vim.defer_fn(function()
-    -- Force transition to IDLE after the timeout
-    self.req_state = REQ_STATE.IDLE
-    self.tool_phase = TOOL_PHASE.NONE
-    self.diff_attached = false
-    self.chat_obj = nil
-    self.done_timer = nil
-    self:_update_timer_state()
+    -- Only transition to IDLE if we are still in a terminal state
+    if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
+      self.req_state = REQ_STATE.IDLE
+      self.content_phase = CONTENT_STATE.NONE
+      self.tool_phase = TOOL_PHASE.NONE
+      self.diff_attached = false
+      self.started = false
+      self.chat_obj = nil
+      self.done_timer = nil
+      self:_update_timer_state()
+    end
   end, self.opts.done_timer)
 
   self:_update_timer_state()
@@ -291,6 +293,7 @@ function M:_update_text()
   local should_be_open = self.enabled and (
     self.started
     or self.req_state == REQ_STATE.FINISHED
+    or self.req_state == REQ_STATE.DONE
     or self.tool_phase ~= TOOL_PHASE.NONE
     or self.diff_attached
   )
@@ -462,7 +465,13 @@ function M:_stop_timer()
 end
 
 function M:_update_timer_state()
-  if self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED or self.tool_phase ~= TOOL_PHASE.NONE or self.diff_attached) then
+  if self.enabled and (
+    self.started
+    or self.req_state == REQ_STATE.FINISHED
+    or self.req_state == REQ_STATE.DONE
+    or self.tool_phase ~= TOOL_PHASE.NONE
+    or self.diff_attached
+  ) then
     self:_start_timer()
   else
     self:_stop_timer()

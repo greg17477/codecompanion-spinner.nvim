@@ -35,6 +35,7 @@ function M:new(chat_id, buffer, opts)
     content_phase = CONTENT_STATE.NONE,
     tool_phase = TOOL_PHASE.NONE,
     tool_count = 0,
+    is_stopped = false,
 
     -- Boundary tracking for polling
     chat_obj = nil,
@@ -93,12 +94,7 @@ function M:_get_ui_state()
     return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
   end
 
-  -- 2. Active Work Priority
-  if self.tool_phase == TOOL_PHASE.RUNNING then
-    return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
-  end
-
-  -- 3. Streaming Phase (includes reasoning/thinking)
+  -- 2. Streaming Phase (Highest activity priority)
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "CodeCompanionSpinnerReceiving", true
@@ -108,6 +104,11 @@ function M:_get_ui_state()
     end
   end
 
+  -- 3. Active Work Priority
+  if self.tool_phase == TOOL_PHASE.RUNNING then
+    return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
+  end
+
   -- 4. Background Processing
   if self.tool_phase == TOOL_PHASE.PROCESSING then
     return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
@@ -115,6 +116,9 @@ function M:_get_ui_state()
 
   -- 5. Terminal State (Lowest priority)
   if self.req_state == REQ_STATE.FINISHED then
+    if self.is_stopped then
+      return msgs.stopped or msgs.done, "CodeCompanionSpinnerDone", false
+    end
     return msgs.done, "CodeCompanionSpinnerDone", false
   end
 
@@ -125,7 +129,7 @@ function M:handle_event(event, data)
   -- Guard: Only specific events can break out of FINISHED
   if self.req_state == REQ_STATE.FINISHED and event ~= "CodeCompanionRequestStarted" then
     -- Allow tool events even if request is technically finished (common for agentic turns)
-    if not (event:match("Tool") or event:match("Diff")) then
+    if not (event:match("Tool") or event:match("Diff") or event:match("Chat")) then
       return
     end
   end
@@ -143,6 +147,7 @@ function M:handle_event(event, data)
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
     self.diff_attached = false
+    self.is_stopped = false
 
     -- Clear any pending idle transition
     if self.done_timer then
@@ -180,10 +185,16 @@ function M:handle_event(event, data)
     if self.tool_count == 0 then
       self.tool_phase = TOOL_PHASE.PROCESSING
     end
+    if self.req_state == REQ_STATE.FINISHED then
+      self:on_stream_end()
+    end
 
   elseif event == "CodeCompanionToolsFinished" then
     self.tool_count = 0
     self.tool_phase = TOOL_PHASE.NONE
+    if self.req_state == REQ_STATE.FINISHED then
+      self:on_stream_end()
+    end
 
   elseif event == "CodeCompanionToolApprovalRequested" then
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
@@ -195,6 +206,9 @@ function M:handle_event(event, data)
     else
       self.tool_phase = TOOL_PHASE.NONE
     end
+    if self.req_state == REQ_STATE.FINISHED then
+      self:on_stream_end()
+    end
 
   elseif event == "CodeCompanionDiffAttached" then
     self.diff_attached = true
@@ -202,8 +216,15 @@ function M:handle_event(event, data)
 
   elseif event == "CodeCompanionDiffDetached" or event == "CodeCompanionDiffAccepted" or event == "CodeCompanionDiffRejected" then
     self.diff_attached = false
+    if self.req_state == REQ_STATE.FINISHED then
+      self:on_stream_end()
+    end
 
-  elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
+  elseif event == "CodeCompanionChatDone" then
+    self.is_stopped = false
+    self:on_stream_end()
+  elseif event == "CodeCompanionChatStopped" then
+    self.is_stopped = true
     self:on_stream_end()
   end
 

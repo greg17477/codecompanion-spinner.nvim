@@ -16,6 +16,7 @@ M.opts = {
     awaiting_approval = "󱗿 Awaiting approval",
     diff_attached = "󰙶 Diff attached",
     done = "󰄬 Done!",
+    stopped = "󰓛 Stopped",
   },
   window = {
     width = 20,

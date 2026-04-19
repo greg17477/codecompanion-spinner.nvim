@@ -45,27 +45,32 @@ function M:new(chat_id, buffer, opts)
     win_id = nil,
     namespace_id = vim.api.nvim_create_namespace("CodeCompanionSpinner"),
     spinner_index = 0,
-    spinner_symbols = opts.spinner_symbols or { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+    spinner_symbols = opts.spinner_symbols,
 
     -- Dirty checking
     last_ui_msg = nil,
     last_spinner_index = -1,
+
+    -- Diff state
+    diff_attached = false,
   }
 
   -- Set up highlights once
   local hl = object.opts.highlights or {}
   local highlights = {
-    CodeCompanionSpinner = hl.spinner or "DiagnosticError",
-    CodeCompanionSpinnerThinking = hl.thinking or "DiagnosticHint",
-    CodeCompanionSpinnerReceiving = hl.receiving or "DiagnosticInfo",
-    CodeCompanionSpinnerAwaitingApproval = hl.awaiting_approval or "DiagnosticWarn",
-    CodeCompanionSpinnerDiffAttached = hl.diff_attached or "DiagnosticWarn",
-    CodeCompanionSpinnerToolRunning = hl.tool_running or "DiagnosticHint",
-    CodeCompanionSpinnerToolProcessing = hl.tool_processing or "DiagnosticHint",
-    CodeCompanionSpinnerDone = hl.done or "DiagnosticOk",
+    CodeCompanionSpinner = hl.spinner,
+    CodeCompanionSpinnerThinking = hl.thinking,
+    CodeCompanionSpinnerReceiving = hl.receiving,
+    CodeCompanionSpinnerAwaitingApproval = hl.awaiting_approval,
+    CodeCompanionSpinnerDiffAttached = hl.diff_attached,
+    CodeCompanionSpinnerToolRunning = hl.tool_running,
+    CodeCompanionSpinnerToolProcessing = hl.tool_processing,
+    CodeCompanionSpinnerDone = hl.done,
   }
   for group, link in pairs(highlights) do
-    vim.api.nvim_set_hl(0, group, { link = link, default = true })
+    if link then
+      vim.api.nvim_set_hl(0, group, { link = link, default = true })
+    end
   end
 
   self.__index = self
@@ -80,23 +85,28 @@ function M:_get_ui_state()
 
   -- 1. Terminal State
   if self.req_state == REQ_STATE.FINISHED then
-    return msgs.done or "󰄬 Done!", "CodeCompanionSpinnerDone", false
+    return msgs.done, "CodeCompanionSpinnerDone", false
   end
 
   -- 2. Tool Priority
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
-    return msgs.awaiting_approval or "󱗿 Awaiting approval", "CodeCompanionSpinnerAwaitingApproval", false
+    return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
   end
+
+  if self.diff_attached then
+    return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
+  end
+
   if self.tool_phase == TOOL_PHASE.RUNNING then
-    return msgs.tool_running or "...tool running", "CodeCompanionSpinnerToolRunning", true
+    return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
   -- 3. Streaming Phase
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
-      return msgs.receiving or "...receiving", "CodeCompanionSpinnerReceiving", true
+      return msgs.receiving, "CodeCompanionSpinnerReceiving", true
     elseif self.content_phase == CONTENT_STATE.REASONING then
-      return msgs.thinking or "...thinking", "CodeCompanionSpinnerThinking", true
+      return msgs.thinking, "CodeCompanionSpinnerThinking", true
     end
   end
 
@@ -121,6 +131,7 @@ function M:handle_event(event, data)
     self.started = true
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
+    self.diff_attached = false
 
     -- Boundary Lock: capture chunk count to ignore old turn data
     if not self.chat_obj then
@@ -159,6 +170,13 @@ function M:handle_event(event, data)
   elseif event == "CodeCompanionToolApprovalFinished" then
     self.tool_phase = self.tool_count > 0 and TOOL_PHASE.RUNNING or TOOL_PHASE.NONE
 
+  elseif event == "CodeCompanionDiffAttached" then
+    self.diff_attached = true
+    self.started = true
+
+  elseif event == "CodeCompanionDiffDetached" or event == "CodeCompanionDiffAccepted" or event == "CodeCompanionDiffRejected" then
+    self.diff_attached = false
+
   elseif event == "CodeCompanionChatDone" or event == "CodeCompanionChatStopped" then
     self:on_stream_end()
   end
@@ -173,6 +191,7 @@ function M:on_stream_end()
   self.tool_phase = TOOL_PHASE.NONE
   self.tool_count = 0
   self.started = false
+  self.diff_attached = false
 
   if self.done_timer then
     self.done_timer:stop()
@@ -182,7 +201,7 @@ function M:on_stream_end()
     self.req_state = REQ_STATE.IDLE
     self.chat_obj = nil
     self:_update_timer_state()
-  end, self.opts.done_timer or 2000)
+  end, self.opts.done_timer)
 
   self:_update_timer_state()
 end
@@ -230,6 +249,7 @@ function M:_update_text()
     self.started
     or self.req_state == REQ_STATE.FINISHED
     or self.tool_phase ~= TOOL_PHASE.NONE
+    or self.diff_attached
   )
 
   if not should_be_open then
@@ -263,8 +283,8 @@ function M:_update_text()
   local display_text = " " .. msg
   local full_text = symbol .. display_text
 
-  local total_width = self.opts.window.width or 20
-  local right_padding = self.opts.window.padding or 1
+  local total_width = self.opts.window.width
+  local right_padding = self.opts.window.padding
   local content_width = vim.fn.strdisplaywidth(full_text)
   local required_width = content_width + right_padding
 
@@ -324,12 +344,12 @@ function M:_create_window(width)
   local win_width = vim.api.nvim_win_get_width(chat_win_id)
   local win_height = vim.api.nvim_win_get_height(chat_win_id)
 
-  local row = win_config.row or -2
+  local row = win_config.row
   if row < 0 then
     row = math.max(0, win_height + row)
   end
 
-  local col = win_config.col or -1
+  local col = win_config.col
   if col < 0 then
     col = math.max(0, win_width - width + (col + 1))
   end
@@ -338,14 +358,14 @@ function M:_create_window(width)
     relative = "win",
     win = chat_win_id,
     width = width,
-    height = win_config.height or 1,
+    height = win_config.height,
     row = row,
     col = col,
-    zindex = win_config.zindex or 1000,
-    border = win_config.border or "none",
-    style = "minimal",
-    focusable = win_config.focusable or false,
-    noautocmd = win_config.noautocmd ~= false,
+    zindex = win_config.zindex,
+    border = win_config.border,
+    style = win_config.style,
+    focusable = win_config.focusable,
+    noautocmd = win_config.noautocmd,
   }
 
   if self.win_id and vim.api.nvim_win_is_valid(self.win_id) then
@@ -360,7 +380,7 @@ function M:_create_window(width)
 
   if s then
     self.win_id = win_id
-    vim.api.nvim_set_option_value("winblend", win_config.winblend or 10, { win = self.win_id })
+    vim.api.nvim_set_option_value("winblend", win_config.winblend, { win = self.win_id })
     if win_config.winhl then
       vim.api.nvim_set_option_value("winhighlight", win_config.winhl, { win = self.win_id })
     end
@@ -386,7 +406,7 @@ function M:_start_timer()
     self:_update_text()
   end)
   self.timer = vim.uv.new_timer()
-  self.timer:start(0, 100, timer_fn)
+  self.timer:start(0, self.opts.timer_interval, timer_fn)
 end
 
 function M:_stop_timer()
@@ -399,7 +419,7 @@ function M:_stop_timer()
 end
 
 function M:_update_timer_state()
-  if self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED or self.tool_phase ~= TOOL_PHASE.NONE) then
+  if self.enabled and (self.started or self.req_state == REQ_STATE.FINISHED or self.tool_phase ~= TOOL_PHASE.NONE or self.diff_attached) then
     self:_start_timer()
   else
     self:_stop_timer()

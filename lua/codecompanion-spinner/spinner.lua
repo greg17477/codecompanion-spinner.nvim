@@ -36,6 +36,7 @@ function M:new(chat_id, buffer, opts)
     content_phase = CONTENT_STATE.NONE,
     tool_phase = TOOL_PHASE.NONE,
     tool_count = 0,
+    has_tool_call = false,
     is_stopped = false,
 
     -- Boundary tracking for polling
@@ -86,39 +87,41 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. User Interaction Priority (Action required)
+  -- 1. User Interaction Priority (Highest)
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
     return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
   end
 
   if self.diff_attached then
-    return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
+    return msgs.awaiting_approval, "CodeCompanionSpinnerDiffAttached", false
   end
 
-  -- 2. Active Work Priority
+  -- 2. Active Tool Work
   if self.tool_phase == TOOL_PHASE.RUNNING then
     return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
-  if self.tool_phase == TOOL_PHASE.PROCESSING then
-    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
-  end
-
-  -- 3. Active Stream or Turn Transition Phase
+  -- 3. Active Stream Status
   if self.req_state == REQ_STATE.STREAMING then
-    -- Default to stream status
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "CodeCompanionSpinnerReceiving", true
     end
-    -- Fallback to thinking for any other active state
+    -- Fallback to thinking (Reasoning or just started)
     return msgs.thinking, "CodeCompanionSpinnerThinking", true
   end
 
-  -- 4. Terminal State (Lowest priority)
+  -- 4. Tool Processing
+  -- If tool has just finished but chat hasn't ended, or we explicitly know a tool was called
+  if self.tool_phase == TOOL_PHASE.PROCESSING or (self.req_state == REQ_STATE.FINISHED and self.has_tool_call) then
+    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
+  end
+
+  -- 5. Terminal State
   if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
     if self.is_stopped then
       return msgs.stopped or msgs.done, "CodeCompanionSpinnerDone", false
     end
+    -- FINISHED + has_tool_call was already handled in step 4
     return msgs.done, "CodeCompanionSpinnerDone", false
   end
 
@@ -160,6 +163,7 @@ function M:handle_event(event, data)
     self.started = true
     self.tool_phase = TOOL_PHASE.NONE
     self.tool_count = 0
+    self.has_tool_call = false
     self.diff_attached = false
     self.is_stopped = false
 
@@ -285,6 +289,9 @@ function M:_poll_state()
     self.content_phase = CONTENT_STATE.REASONING
   elseif block_type == "llm_message" or block_type == "tool_use" then
     self.content_phase = CONTENT_STATE.RESPONSE
+    if block_type == "tool_use" then
+      self.has_tool_call = true
+    end
   end
 end
 

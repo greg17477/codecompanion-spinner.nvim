@@ -89,24 +89,29 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. Awaiting Approval (Highest Priority)
-  if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
-    return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
+  -- 1. Awaiting Approval or Diff (Highest Priority)
+  if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL or self.diff_attached then
+    if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
+      return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
+    end
+    return msgs.diff_attached or msgs.awaiting_approval, "CodeCompanionSpinnerDiffAttached", false
   end
 
-  -- 2. Diff Attached
-  if self.diff_attached then
-    return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
-  end
-
-  -- 3. Active Tool Work
+  -- 2. Active Tool Work
   if self.tool_phase == TOOL_PHASE.RUNNING or self.tool_count > 0 then
     return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
-  -- 4. Tool Just Finished (Transient State)
+  -- 3. Tool Just Finished (Transient State while streaming)
   if self.tool_phase == TOOL_PHASE.FINISHED then
     return msgs.tool_finished, "CodeCompanionSpinnerToolFinished", false
+  end
+
+  -- 4. Tool Processing / Waiting for next turn
+  -- If tool ended while NOT streaming, or we are specifically in PROCESSING phase
+  -- But ONLY if we are not in a terminal DONE state (which shows "Done" or "Stopped")
+  if self.req_state ~= REQ_STATE.DONE and self.req_state ~= REQ_STATE.STREAMING and (self.tool_phase == TOOL_PHASE.PROCESSING or (self.has_tool_call and self.req_state ~= REQ_STATE.IDLE)) then
+    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
   end
 
   -- 5. Active Stream Status (Thinking/Receiving)
@@ -117,15 +122,7 @@ function M:_get_ui_state()
     return msgs.thinking, "CodeCompanionSpinnerThinking", true
   end
 
-  -- 6. Tool Processing / Waiting for next turn after tools
-  if
-    self.tool_phase == TOOL_PHASE.PROCESSING
-    or (self.req_state == REQ_STATE.FINISHED and self.has_tool_call)
-  then
-    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
-  end
-
-  -- 7. Done / Terminal States
+  -- 6. Done / Stopped / Finished
   if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
     if self.is_stopped then
       return msgs.stopped or msgs.done, "CodeCompanionSpinnerDone", false
@@ -147,7 +144,7 @@ end
 
 function M:handle_event(event, data)
   -- Guard: Prevent late or out-of-order events from re-activating the spinner
-  if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.IDLE then
+  if self.req_state == REQ_STATE.DONE then
     local wake_up_events = {
       CodeCompanionRequestStarted = true,
       CodeCompanionRequestStreaming = true,
@@ -172,10 +169,13 @@ function M:handle_event(event, data)
     -- Before response -> "thinking"
     self.content_phase = CONTENT_STATE.REASONING
     self.started = true
-    self.tool_phase = TOOL_PHASE.NONE
+    -- Only reset tool phases if we're not awaiting approval
+    if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
+      self.tool_phase = TOOL_PHASE.NONE
+    end
     self.tool_count = 0
     self.has_tool_call = false
-    self.diff_attached = false
+    -- Keep diff_attached if it was already true (highest priority)
     self.is_stopped = false
 
     -- Boundary Lock: capture chunk count to ignore old turn data
@@ -204,7 +204,12 @@ function M:handle_event(event, data)
   elseif event == "CodeCompanionToolStarted" then
     self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
-    self.tool_phase = TOOL_PHASE.RUNNING
+    -- If we are awaiting approval, we stay in that phase until finished/attached?
+    -- Actually, usually ToolStarted follows approval.
+    -- But if one tool is running and another needs approval, we should show approval.
+    if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
+      self.tool_phase = TOOL_PHASE.RUNNING
+    end
     self.has_tool_call = true
     self.started = true
   elseif event == "CodeCompanionToolFinished" then
@@ -267,32 +272,33 @@ function M:on_stream_end(state)
   self:_clear_done_timer()
 
   self.done_timer = vim.defer_fn(function()
-    -- If a tool started or is awaiting approval in the grace period, ABORT the transition to DONE
-    if self.tool_count > 0 or self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL or self.diff_attached then
-      self.done_timer = nil
-      return
-    end
+    -- If a tool started or is awaiting approval in the grace period, we still transition to FINISHED/DONE state
+    -- but we might want to skip the terminal "Done" message timer if it's not actually done.
 
     self.req_state = state or REQ_STATE.DONE
     self.started = false
 
-    -- Second timer for the actual "Done" message duration
-    self.done_timer = vim.defer_fn(function()
-      if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
-        self.req_state = REQ_STATE.IDLE
-        self.content_phase = CONTENT_STATE.NONE
-        if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
-          self.tool_phase = TOOL_PHASE.NONE
+    -- If we are truly done (no tools, no approval, no diff), show the "Done" message for a while
+    if self.tool_count == 0 and self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL and not self.diff_attached then
+      self.done_timer = vim.defer_fn(function()
+        if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
+          self.req_state = REQ_STATE.IDLE
+          self.content_phase = CONTENT_STATE.NONE
+          if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
+            self.tool_phase = TOOL_PHASE.NONE
+          end
+          if not self.diff_attached then
+            self.diff_attached = false
+          end
+          self.started = false
+          self.chat_obj = nil
+          self.done_timer = nil
+          self:_update_timer_state()
         end
-        if not self.diff_attached then
-          self.diff_attached = false
-        end
-        self.started = false
-        self.chat_obj = nil
-        self.done_timer = nil
-        self:_update_timer_state()
-      end
-    end, self.opts.done_timer)
+      end, self.opts.done_timer)
+    else
+      self.done_timer = nil
+    end
 
     self:_update_timer_state()
   end, 300) -- Increased to 300ms for better stability

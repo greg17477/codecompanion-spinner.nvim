@@ -98,6 +98,24 @@ The spinner uses the following highlight groups. You can override them in your c
 | `diff_attached` | `DiagnosticWarn` | When a diff is ready for review |
 | `done` | `DiagnosticOk` | Final success state |
 
+## 🧪 Testing
+
+The plugin includes a deterministic test harness to verify the complex state machine and priority logic.
+
+### Running Tests
+
+From your terminal in the project root:
+
+```bash
+nvim --headless -u NONE -c "set runtimepath+=." -c "luafile lua/tests/deterministic_harness.lua" -c "qall"
+```
+
+The harness covers:
+- **20+ Multi-step scenarios** simulating real streaming events.
+- **Strict Priority Verification:** `approval > tool > response > reasoning > idle`.
+- **Transient State Handling:** Proper timing for "tool finished" and "done" messages.
+- **Boundary Conditions:** Ensuring states persist correctly across AI turns.
+
 ## 🙏 Acknowledgements
 
 - [franco-ruggeri](https://github.com/franco-ruggeri) for the original [codecompanion-spinner](https://github.com/franco-ruggeri/codecompanion-spinner.nvim).

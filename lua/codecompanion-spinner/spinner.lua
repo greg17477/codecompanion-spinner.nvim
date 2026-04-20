@@ -65,13 +65,23 @@ function M:new(chat_id, buffer, opts)
   local highlights = {
     CodeCompanionSpinner = hl.spinner,
     CodeCompanionSpinnerThinking = hl.thinking,
+    CodeCompanionSpinnerThinkingSymbol = hl.thinking_symbol,
     CodeCompanionSpinnerReceiving = hl.receiving,
+    CodeCompanionSpinnerReceivingSymbol = hl.receiving_symbol,
     CodeCompanionSpinnerAwaitingApproval = hl.awaiting_approval,
+    CodeCompanionSpinnerAwaitingApprovalSymbol = hl.awaiting_approval_symbol,
     CodeCompanionSpinnerDiffAttached = hl.diff_attached,
+    CodeCompanionSpinnerDiffAttachedSymbol = hl.diff_attached_symbol,
     CodeCompanionSpinnerToolRunning = hl.tool_running,
+    CodeCompanionSpinnerToolRunningSymbol = hl.tool_running_symbol,
     CodeCompanionSpinnerToolFinished = hl.tool_finished,
+    CodeCompanionSpinnerToolFinishedSymbol = hl.tool_finished_symbol,
     CodeCompanionSpinnerToolProcessing = hl.tool_processing,
+    CodeCompanionSpinnerToolProcessingSymbol = hl.tool_processing_symbol,
     CodeCompanionSpinnerDone = hl.done,
+    CodeCompanionSpinnerDoneSymbol = hl.done_symbol,
+    CodeCompanionSpinnerStopped = hl.stopped,
+    CodeCompanionSpinnerStoppedSymbol = hl.stopped_symbol,
   }
   for group, link in pairs(highlights) do
     if link then
@@ -85,49 +95,52 @@ function M:new(chat_id, buffer, opts)
 end
 
 --- Derive UI state based on strict priority hierarchy
---- @return string|nil message, string|nil highlight_group, boolean is_animated
+--- @return string|nil message, string|nil state_key, boolean is_animated
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
   -- 1. Awaiting Approval or Diff (Highest Priority)
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL or self.diff_attached then
     if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
-      return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
+      return msgs.awaiting_approval, "awaiting_approval", false
     end
-    return msgs.diff_attached or msgs.awaiting_approval, "CodeCompanionSpinnerDiffAttached", false
+    return msgs.diff_attached or msgs.awaiting_approval, "diff_attached", false
   end
 
   -- 2. Active Tool Work
   if self.tool_phase == TOOL_PHASE.RUNNING or self.tool_count > 0 then
-    return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
+    return msgs.tool_running, "tool_running", true
   end
 
   -- 3. Tool Just Finished (Transient State while streaming)
   if self.tool_phase == TOOL_PHASE.FINISHED then
-    return msgs.tool_finished, "CodeCompanionSpinnerToolFinished", false
+    return msgs.tool_finished, "tool_finished", false
   end
 
   -- 4. Tool Processing / Waiting for next turn
   -- If tool ended while NOT streaming, or we are specifically in PROCESSING phase
-  -- But ONLY if we are not in a terminal DONE state (which shows "Done" or "Stopped")
-  if self.req_state ~= REQ_STATE.DONE and self.req_state ~= REQ_STATE.STREAMING and (self.tool_phase == TOOL_PHASE.PROCESSING or (self.has_tool_call and self.req_state ~= REQ_STATE.IDLE)) then
-    return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
+  -- But ONLY if we are not in a terminal DONE state (which is handled later)
+  if
+    (self.req_state ~= REQ_STATE.DONE and self.req_state ~= REQ_STATE.STREAMING) and
+    (self.tool_phase == TOOL_PHASE.PROCESSING or (self.has_tool_call and self.req_state ~= REQ_STATE.IDLE))
+  then
+    return msgs.tool_processing, "tool_processing", false
   end
 
-  -- 5. Active Stream Status (Thinking/Receiving)
+  -- 5. Streaming Response vs Reasoning
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
-      return msgs.receiving, "CodeCompanionSpinnerReceiving", true
+      return msgs.receiving, "receiving", true
     end
-    return msgs.thinking, "CodeCompanionSpinnerThinking", true
+    return msgs.thinking, "thinking", true
   end
 
   -- 6. Done / Stopped / Finished
   if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
     if self.is_stopped then
-      return msgs.stopped or msgs.done, "CodeCompanionSpinnerDone", false
+      return msgs.stopped or msgs.done, "stopped", false
     end
-    return msgs.done, "CodeCompanionSpinnerDone", false
+    return msgs.done, "done", false
   end
 
   return nil, nil, false
@@ -204,9 +217,6 @@ function M:handle_event(event, data)
   elseif event == "CodeCompanionToolStarted" then
     self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
-    -- If we are awaiting approval, we stay in that phase until finished/attached?
-    -- Actually, usually ToolStarted follows approval.
-    -- But if one tool is running and another needs approval, we should show approval.
     if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
       self.tool_phase = TOOL_PHASE.RUNNING
     end
@@ -272,9 +282,6 @@ function M:on_stream_end(state)
   self:_clear_done_timer()
 
   self.done_timer = vim.defer_fn(function()
-    -- If a tool started or is awaiting approval in the grace period, we still transition to FINISHED/DONE state
-    -- but we might want to skip the terminal "Done" message timer if it's not actually done.
-
     self.req_state = state or REQ_STATE.DONE
     self.started = false
 
@@ -301,12 +308,11 @@ function M:on_stream_end(state)
     end
 
     self:_update_timer_state()
-  end, 300) -- Increased to 300ms for better stability
+  end, 300)
 
   self:_update_timer_state()
 end
 
---- Extract status by comparing builder state against the request start boundary
 function M:_poll_state()
   if not self.chat_obj then
     local ok, cc = pcall(require, "codecompanion")
@@ -324,20 +330,15 @@ function M:_poll_state()
     return
   end
 
-  -- Proactive Tool/Approval Detection
-  -- Some versions of CodeCompanion might not fire events for inline approvals
   if self.chat_obj.status == "awaiting_approval" then
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
     self.has_tool_call = true
   end
 
-  -- If request is gone, we don't reset content_phase immediately
-  -- because we might be in the middle of a finish event
   if not self.chat_obj.current_request and self.req_state ~= REQ_STATE.STREAMING then
     return
   end
 
-  -- Boundary Check: Only override "Thinking" if fresh chunks have arrived
   local current_chunks = builder.state.total_chunks or 0
   if current_chunks <= self.start_chunks then
     return
@@ -356,7 +357,6 @@ end
 
 
 function M:_update_text()
-  -- Window Stay-Open Condition
   local should_be_open = self.enabled and (
     self.started
     or self.req_state == REQ_STATE.FINISHED
@@ -370,15 +370,13 @@ function M:_update_text()
     return
   end
 
-  -- Synchronize state with CodeCompanion internal builder
   if self.req_state == REQ_STATE.STREAMING then
     self:_poll_state()
   end
 
-  local msg, hl_group, is_animated = self:_get_ui_state()
+  local msg, state_key, is_animated = self:_get_ui_state()
 
-  -- If state is NONE, hide window.
-  if not msg then
+  if not msg or not state_key then
     self:_close_window()
     return
   end
@@ -387,12 +385,17 @@ function M:_update_text()
     self.spinner_index = (self.spinner_index % #self.spinner_symbols) + 1
   end
 
-  -- Dirty check
   if msg == self.last_ui_msg and self.spinner_index == self.last_spinner_index then
     return
   end
 
-  local symbol = is_animated and self.spinner_symbols[self.spinner_index] or ""
+  local symbol = ""
+  if is_animated then
+    symbol = self.spinner_symbols[self.spinner_index]
+  else
+    symbol = self.opts.symbols[state_key] or ""
+  end
+
   local display_text = " " .. msg
   local full_text = symbol .. display_text
 
@@ -412,16 +415,21 @@ function M:_update_text()
   end
 
   local buf = vim.api.nvim_win_get_buf(self.win_id)
-  local leading_spaces = math.max(0, total_width - content_width - right_padding)
+  local win_width = vim.api.nvim_win_get_width(self.win_id)
+  local leading_spaces = math.max(0, win_width - content_width - right_padding)
   local line = string.rep(" ", leading_spaces) .. full_text .. string.rep(" ", right_padding)
 
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
   vim.api.nvim_buf_clear_namespace(buf, self.namespace_id, 0, -1)
 
+  local camel_state = state_key:gsub("_(%l)", string.upper):gsub("^%l", string.upper)
+  local hl_group = "CodeCompanionSpinner" .. camel_state
+  local symbol_hl_group = hl_group .. "Symbol"
+
   if symbol ~= "" then
     vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces, {
       end_col = leading_spaces + #symbol,
-      hl_group = "CodeCompanionSpinner",
+      hl_group = symbol_hl_group,
     })
     vim.api.nvim_buf_set_extmark(buf, self.namespace_id, 0, leading_spaces + #symbol, {
       end_col = leading_spaces + #symbol + #display_text,

@@ -76,6 +76,17 @@ local opts = {
   timer_interval = 200,
   done_timer = 2000,
   spinner_symbols = { "⠋" },
+  symbols = {
+    thinking = nil,
+    receiving = nil,
+    tool_running = nil,
+    tool_finished = "󰄬",
+    tool_processing = "󱗿",
+    awaiting_approval = "󱗿",
+    diff_attached = "󰙶",
+    done = "󰄬",
+    stopped = "󰓛",
+  },
   messages = {
     thinking = "thinking",
     receiving = "receiving",

@@ -25,6 +25,10 @@ local function get_chat_id(data)
   return (data.chat and data.chat.id) or data.id
 end
 
+function M.get_spinner(chat_id)
+  return spinners[chat_id]
+end
+
 M.setup = function(opts)
   config = opts or {}
 

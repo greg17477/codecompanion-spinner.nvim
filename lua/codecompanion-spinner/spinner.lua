@@ -19,6 +19,7 @@ local CONTENT_STATE = {
 local TOOL_PHASE = {
   NONE = "NONE",
   RUNNING = "RUNNING",
+  FINISHED = "FINISHED",
   PROCESSING = "PROCESSING",
   AWAITING_APPROVAL = "AWAITING_APPROVAL",
 }
@@ -68,6 +69,7 @@ function M:new(chat_id, buffer, opts)
     CodeCompanionSpinnerAwaitingApproval = hl.awaiting_approval,
     CodeCompanionSpinnerDiffAttached = hl.diff_attached,
     CodeCompanionSpinnerToolRunning = hl.tool_running,
+    CodeCompanionSpinnerToolFinished = hl.tool_finished,
     CodeCompanionSpinnerToolProcessing = hl.tool_processing,
     CodeCompanionSpinnerDone = hl.done,
   }
@@ -87,45 +89,47 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. User Interaction Priority (Highest)
+  -- 1. Awaiting Approval (Highest Priority)
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
     return msgs.awaiting_approval, "CodeCompanionSpinnerAwaitingApproval", false
   end
 
+  -- 2. Diff Attached
   if self.diff_attached then
     return msgs.diff_attached, "CodeCompanionSpinnerDiffAttached", false
   end
 
-  -- 2. Active Tool Work
-  if self.tool_phase == TOOL_PHASE.RUNNING then
+  -- 3. Active Tool Work
+  if self.tool_phase == TOOL_PHASE.RUNNING or self.tool_count > 0 then
     return msgs.tool_running, "CodeCompanionSpinnerToolRunning", true
   end
 
-  -- 3. Active Stream Status
+  -- 4. Tool Just Finished (Transient State)
+  if self.tool_phase == TOOL_PHASE.FINISHED then
+    return msgs.tool_finished, "CodeCompanionSpinnerToolFinished", false
+  end
+
+  -- 5. Active Stream Status (Thinking/Receiving)
   if self.req_state == REQ_STATE.STREAMING then
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "CodeCompanionSpinnerReceiving", true
     end
-    -- Fallback to thinking (Reasoning or just started)
     return msgs.thinking, "CodeCompanionSpinnerThinking", true
   end
 
-  -- 4. Tool Processing
-  -- Show processing if a tool is active, just finished, or we're between turns with tools
+  -- 6. Tool Processing / Waiting for next turn after tools
   if
     self.tool_phase == TOOL_PHASE.PROCESSING
-    or self.tool_count > 0
     or (self.req_state == REQ_STATE.FINISHED and self.has_tool_call)
   then
     return msgs.tool_processing, "CodeCompanionSpinnerToolProcessing", true
   end
 
-  -- 5. Terminal State
+  -- 7. Done / Terminal States
   if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
     if self.is_stopped then
       return msgs.stopped or msgs.done, "CodeCompanionSpinnerDone", false
     end
-    -- FINISHED + has_tool_call was already handled in step 4
     return msgs.done, "CodeCompanionSpinnerDone", false
   end
 
@@ -146,6 +150,7 @@ function M:handle_event(event, data)
   if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.IDLE then
     local wake_up_events = {
       CodeCompanionRequestStarted = true,
+      CodeCompanionRequestStreaming = true,
       CodeCompanionToolStarted = true,
       CodeCompanionToolApprovalRequested = true,
       CodeCompanionDiffAttached = true,
@@ -164,7 +169,7 @@ function M:handle_event(event, data)
   if event == "CodeCompanionRequestStarted" then
     self:_clear_done_timer()
     self.req_state = REQ_STATE.STREAMING
-    -- Before response -> "thinking" (Requirement satisfied)
+    -- Before response -> "thinking"
     self.content_phase = CONTENT_STATE.REASONING
     self.started = true
     self.tool_phase = TOOL_PHASE.NONE
@@ -190,10 +195,11 @@ function M:handle_event(event, data)
       self.req_state = REQ_STATE.STREAMING
     end
     self.started = true
+    -- Immediate poll to catch phase changes (thinking -> receiving)
+    self:_poll_state()
   elseif event == "CodeCompanionRequestFinished" then
     -- Ensure we have the absolute latest state before finishing the turn
     self:_poll_state()
-    -- Treat end of turn similar to end of chat to show "Done!" briefly
     self:on_stream_end(REQ_STATE.FINISHED)
   elseif event == "CodeCompanionToolStarted" then
     self:_clear_done_timer()
@@ -204,7 +210,20 @@ function M:handle_event(event, data)
   elseif event == "CodeCompanionToolFinished" then
     self.tool_count = math.max(0, self.tool_count - 1)
     if self.tool_count == 0 then
-      self.tool_phase = TOOL_PHASE.PROCESSING
+      -- Transient state: show "tool finished" briefly
+      self.tool_phase = TOOL_PHASE.FINISHED
+      vim.defer_fn(function()
+        if self.tool_phase == TOOL_PHASE.FINISHED then
+          -- Priority: if still streaming, fall back to thinking/receiving
+          if self.req_state == REQ_STATE.STREAMING then
+            self.tool_phase = TOOL_PHASE.NONE
+            self:_poll_state()
+          else
+            self.tool_phase = TOOL_PHASE.PROCESSING
+          end
+          self:_update_timer_state()
+        end
+      end, 500)
     end
   elseif event == "CodeCompanionToolsFinished" then
     self.tool_count = 0
@@ -219,7 +238,6 @@ function M:handle_event(event, data)
     if self.tool_count > 0 then
       self.tool_phase = TOOL_PHASE.RUNNING
     else
-      -- Bridge state to prevent flash of "Done"
       self.tool_phase = TOOL_PHASE.PROCESSING
     end
   elseif event == "CodeCompanionDiffAttached" then
@@ -244,25 +262,40 @@ function M:handle_event(event, data)
 end
 
 function M:on_stream_end(state)
-  self.req_state = state or REQ_STATE.DONE
-  self.content_phase = CONTENT_STATE.NONE
-  self.started = false
-
+  -- Use a larger grace period (300ms) to avoid flashing "Done" before
+  -- subsequent ToolStarted or RequestStarted events arrive.
   self:_clear_done_timer()
 
   self.done_timer = vim.defer_fn(function()
-    -- Only transition to IDLE if we are still in a terminal state
-    if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
-      self.req_state = REQ_STATE.IDLE
-      self.content_phase = CONTENT_STATE.NONE
-      self.tool_phase = TOOL_PHASE.NONE
-      self.diff_attached = false
-      self.started = false
-      self.chat_obj = nil
+    -- If a tool started or is awaiting approval in the grace period, ABORT the transition to DONE
+    if self.tool_count > 0 or self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL or self.diff_attached then
       self.done_timer = nil
-      self:_update_timer_state()
+      return
     end
-  end, self.opts.done_timer)
+
+    self.req_state = state or REQ_STATE.DONE
+    self.started = false
+
+    -- Second timer for the actual "Done" message duration
+    self.done_timer = vim.defer_fn(function()
+      if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
+        self.req_state = REQ_STATE.IDLE
+        self.content_phase = CONTENT_STATE.NONE
+        if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
+          self.tool_phase = TOOL_PHASE.NONE
+        end
+        if not self.diff_attached then
+          self.diff_attached = false
+        end
+        self.started = false
+        self.chat_obj = nil
+        self.done_timer = nil
+        self:_update_timer_state()
+      end
+    end, self.opts.done_timer)
+
+    self:_update_timer_state()
+  end, 300) -- Increased to 300ms for better stability
 
   self:_update_timer_state()
 end
@@ -271,24 +304,36 @@ end
 function M:_poll_state()
   if not self.chat_obj then
     local ok, cc = pcall(require, "codecompanion")
-    if ok then self.chat_obj = cc.buf_get_chat(self.buffer) end
+    if ok then
+      self.chat_obj = cc.buf_get_chat(self.buffer)
+    end
   end
 
-  if not self.chat_obj then return end
-
-  -- Boundary Check 1: If no request is running, we are effectively idle
-  if not self.chat_obj.current_request then
-    self.content_phase = CONTENT_STATE.NONE
+  if not self.chat_obj then
     return
   end
 
   local builder = self.chat_obj.builder
-  if not builder or not builder.state then return end
+  if not builder or not builder.state then
+    return
+  end
 
-  -- Boundary Check 2: Only override "Thinking" if fresh chunks have arrived
+  -- Proactive Tool/Approval Detection
+  -- Some versions of CodeCompanion might not fire events for inline approvals
+  if self.chat_obj.status == "awaiting_approval" then
+    self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
+    self.has_tool_call = true
+  end
+
+  -- If request is gone, we don't reset content_phase immediately
+  -- because we might be in the middle of a finish event
+  if not self.chat_obj.current_request and self.req_state ~= REQ_STATE.STREAMING then
+    return
+  end
+
+  -- Boundary Check: Only override "Thinking" if fresh chunks have arrived
   local current_chunks = builder.state.total_chunks or 0
   if current_chunks <= self.start_chunks then
-    -- Stay in current phase (Thinking) while waiting for the first token
     return
   end
 
@@ -297,11 +342,12 @@ function M:_poll_state()
     self.content_phase = CONTENT_STATE.REASONING
   elseif block_type == "llm_message" or block_type == "tool_use" then
     self.content_phase = CONTENT_STATE.RESPONSE
-    if block_type == "tool_use" then
+    if block_type == "tool_use" or (builder.tools and #builder.tools > 0) then
       self.has_tool_call = true
     end
   end
 end
+
 
 function M:_update_text()
   -- Window Stay-Open Condition

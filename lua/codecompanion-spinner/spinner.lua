@@ -408,6 +408,7 @@ function M:_update_text()
 
   local display_text = " " .. msg
   local full_text = symbol .. display_text
+  log.info("UI Update: " .. full_text)
 
   local total_width = self.opts.window.width
   local right_padding = self.opts.window.padding

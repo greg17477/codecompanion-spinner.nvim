@@ -101,7 +101,7 @@ local opts = {
 }
 
 local function get_state_summary(s)
-  return string.format("R:%s|C:%s|T:%s|#T:%d|Diff:%s", 
+  return string.format("R:%s|C:%s|T:%s|#T:%d|Diff:%s",
     s.req_state, s.content_phase, s.tool_phase, s.tool_count, tostring(s.diff_attached))
 end
 
@@ -305,6 +305,32 @@ local SCENARIOS = {
       { event = "CodeCompanionChatStopped", expected = "thinking" },
       { cmd = "wait", ms = 300, expected = "stopped" },
     }
+  },
+  {
+    id = "real_world_tool_calls",
+    steps = {
+      { event = "CodeCompanionRequestStarted", expected = "thinking" },
+      {
+        event = "CodeCompanionToolStarted",
+        data = { tool = { name = "secrets_scan_repo" } },
+        expected = "tool running [secrets_scan_repo]"
+      },
+      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { cmd = "wait", ms = 500, expected = "thinking" },
+      {
+        event = "CodeCompanionToolStarted",
+        data = { tool = { name = "git_git_status" } },
+        expected = "tool running [git_git_status]"
+      },
+      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { cmd = "wait", ms = 500, expected = "thinking" },
+      {
+        event = "CodeCompanionToolStarted",
+        data = { tool = { name = "context-mode_ctx_execute" } },
+        expected = "tool running [context-mode_ctx_execute]"
+      },
+      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+    }
   }
 }
 
@@ -326,7 +352,7 @@ local function run_harness()
     for _, step in ipairs(scenario.steps) do
       total_steps = total_steps + 1
       local action_desc = ""
-      
+
       if step.cmd == "wait" then
         action_desc = "Wait " .. step.ms .. "ms"
         run_deferred(step.ms)
@@ -338,7 +364,12 @@ local function run_harness()
         s.content_phase = "RESPONSE"
       else
         action_desc = step.event
-        s:handle_event(step.event, { chat = { id = 1 } })
+        if step.data and step.data.tool then
+          action_desc = action_desc .. " (" .. step.data.tool.name .. ")"
+        end
+        local event_data = step.data or { chat = { id = 1 } }
+        if not event_data.chat then event_data.chat = { id = 1 } end
+        s:handle_event(step.event, event_data)
       end
 
       local actual_msg, _, _ = s:_get_ui_state()
@@ -346,19 +377,19 @@ local function run_harness()
       local expected_msg = step.expected or "nil"
       local state_summary = get_state_summary(s)
       local pass = (actual_msg == expected_msg)
-      
+
       if pass then total_passed = total_passed + 1 end
       local result_str = pass and "PASS" or "FAIL"
 
-      print(string.format("%-25s | %-35s | %-25s | %-12s | %-12s | %s", 
+      print(string.format("%-25s | %-35s | %-25s | %-12s | %-12s | %s",
         scenario.id, action_desc, state_summary, expected_msg, actual_msg, result_str))
     end
     print(string.rep("-", 120))
   end
 
-  print(string.format("\nFINAL RESULTS: %d/%d steps passed (%.1f%%)", 
+  print(string.format("\nFINAL RESULTS: %d/%d steps passed (%.1f%%)",
     total_passed, total_steps, (total_passed / total_steps) * 100))
-  
+
   if total_passed < total_steps then
     print("\n[!] SOME TESTS FAILED. Please review the logic in spinner.lua against the requirements.")
     os.exit(1)

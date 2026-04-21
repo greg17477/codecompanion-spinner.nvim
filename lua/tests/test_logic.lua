@@ -67,27 +67,50 @@ local function test()
   assert_eq(msg, "receiving", "Should be receiving after response starts")
   assert_eq(state_key, "receiving", "State key should be receiving")
 
-  print("Test 3: Tool starts")
-  s:handle_event("CodeCompanionToolStarted", {})
+  print("Test 3: Tool starts (git_git_status)")
+  s:handle_event("CodeCompanionToolStarted", { tool = { name = "git_git_status" } })
   msg, state_key = s:_get_ui_state()
-  assert_eq(msg, "tool running", "Tool running should have priority over receiving")
+  assert_eq(msg, "tool running [git_git_status]", "Tool name should be shown in message")
   assert_eq(state_key, "tool_running", "State key should be tool_running")
+
+  print("Test 3b: Tool switch (secrets_scan_repo)")
+  s:handle_event("CodeCompanionToolStarted", { tool = { name = "secrets_scan_repo" } })
+  msg, state_key = s:_get_ui_state()
+  assert_eq(msg, "tool running [secrets_scan_repo]", "New tool name should overwrite old one")
+
+  print("Test 3c: Tool switch (context-mode_ctx_execute)")
+  s:handle_event("CodeCompanionToolStarted", { tool = { name = "context-mode_ctx_execute" } })
+  msg, state_key = s:_get_ui_state()
+  assert_eq(msg, "tool running [context-mode_ctx_execute]", "New tool name should overwrite old one")
 
   print("Test 4: Tool ends (still streaming)")
   s:handle_event("CodeCompanionToolFinished", {})
+  -- Note: tool_count was incremented 3 times, now it is 2.
+  -- In real scenario it would be matched, but here we just decrement.
   msg, state_key = s:_get_ui_state()
-  assert_eq(msg, "tool finished", "Should show tool finished briefly")
-  
+  -- If tool_count > 0, it still shows "tool running".
+  -- But since we just called Finished, the code sets active_tool = nil if tool_count == 0.
+  -- Here tool_count is 2, so it still shows the last active tool because it wasn't cleared.
+  assert_eq(msg, "tool running [context-mode_ctx_execute]", "Should still show tool running if count > 0")
+
+  -- Decrement until 0
+  s:handle_event("CodeCompanionToolFinished", {})
+  s:handle_event("CodeCompanionToolFinished", {})
+
+  msg, state_key = s:_get_ui_state()
+  assert_eq(msg, "tool finished", "Should show tool finished briefly when count hits 0")
+  assert_eq(s.active_tool, nil, "active_tool should be cleared when count hits 0")
+
   -- Run the 500ms delay timer
   run_deferred(500)
-  
+
   msg, state_key = s:_get_ui_state()
   assert_eq(msg, "receiving", "Should fall back to receiving when tool ends but still streaming")
   assert_eq(state_key, "receiving", "State key should be receiving")
 
   print("Test 5: Request finished (terminal state)")
   s:handle_event("CodeCompanionRequestFinished", {})
-  
+
   -- Request finished sets a 300ms grace timer
   run_deferred(300)
 

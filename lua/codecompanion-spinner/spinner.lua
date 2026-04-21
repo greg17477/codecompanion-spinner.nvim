@@ -39,6 +39,7 @@ function M:new(chat_id, buffer, opts)
     tool_count = 0,
     has_tool_call = false,
     is_stopped = false,
+    active_tool = nil,
 
     -- Boundary tracking for polling
     chat_obj = nil,
@@ -109,7 +110,11 @@ function M:_get_ui_state()
 
   -- 2. Active Tool Work
   if self.tool_phase == TOOL_PHASE.RUNNING or self.tool_count > 0 then
-    return msgs.tool_running, "tool_running", true
+    local msg = msgs.tool_running
+    if self.active_tool then
+      msg = msg .. " [" .. self.active_tool .. "]"
+    end
+    return msg, "tool_running", true
   end
 
   -- 3. Tool Just Finished (Transient State while streaming)
@@ -220,11 +225,15 @@ function M:handle_event(event, data)
     if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
       self.tool_phase = TOOL_PHASE.RUNNING
     end
+    if data and data.tool and data.tool.name then
+      self.active_tool = data.tool.name
+    end
     self.has_tool_call = true
     self.started = true
   elseif event == "CodeCompanionToolFinished" then
     self.tool_count = math.max(0, self.tool_count - 1)
     if self.tool_count == 0 then
+      self.active_tool = nil
       -- Transient state: show "tool finished" briefly
       self.tool_phase = TOOL_PHASE.FINISHED
       vim.defer_fn(function()
@@ -242,6 +251,7 @@ function M:handle_event(event, data)
     end
   elseif event == "CodeCompanionToolsFinished" then
     self.tool_count = 0
+    self.active_tool = nil
     self.tool_phase = TOOL_PHASE.PROCESSING
     self.has_tool_call = true
   elseif event == "CodeCompanionToolApprovalRequested" then

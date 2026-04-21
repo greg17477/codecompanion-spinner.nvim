@@ -1,4 +1,4 @@
-*codecompanion-spinner.txt*    For NVIM v0.8.0    Last change: 2026 January 20
+*codecompanion-spinner.txt*    For NVIM v0.8.0    Last change: 2026 April 21
 
 ==============================================================================
 Table of Contents                    *codecompanion-spinner-table-of-contents*
@@ -6,73 +6,168 @@ Table of Contents                    *codecompanion-spinner-table-of-contents*
 1. Overview                                   |codecompanion-spinner-overview|
 2. Features                                   |codecompanion-spinner-features|
 3. Installation                           |codecompanion-spinner-installation|
-4. Acknowledgements                   |codecompanion-spinner-acknowledgements|
-5. Links                                         |codecompanion-spinner-links|
+4. Configuration                         |codecompanion-spinner-configuration|
+5. Highlights                               |codecompanion-spinner-highlights|
+6. Testing                                     |codecompanion-spinner-testing|
+7. Acknowledgements                   |codecompanion-spinner-acknowledgements|
+8. Links                                         |codecompanion-spinner-links|
 
 ==============================================================================
 1. Overview                                   *codecompanion-spinner-overview*
 
-Inline spinner for CodeCompanion
-<https://github.com/olimorris/codecompanion.nvim> in Neovim.
+Elegant, state-aware status feedback for CodeCompanion.nvim
+<https://github.com/olimorris/codecompanion.nvim>.
 
-This plugin adds an animated spinner in the CodeCompanion chat while AI is
-processing a request, giving clear feedback to the user.
-
-Note the _“Processing…”_ virtual text while AI is generating the
-response.
-
+This plugin provides a non-intrusive floating spinner that tracks the
+lifecycle of AI requests, tool executions, and user interactions within your
+CodeCompanion chat buffers.
 
 ==============================================================================
 2. Features                                   *codecompanion-spinner-features*
 
-- Animated spinner in CodeCompanion chat during AI processing.
-- Supports multiple chats with concurrent active requests (each gets its
-    own spinner).
-- Zero configuration.
-
+- Lifecycle Tracking: Visual feedback for thinking, receiving (streaming),
+  tool execution, and diff generation.
+- State-Aware Messages: Contextual indicators for "Awaiting Approval",
+  "Diff Attached", and more.
+- Multi-Chat Support: Concurrent requests across different chat buffers are
+  managed independently.
+- Zero-Config by Default: Works out of the box with sensible defaults.
+- Smart Positioning: Heuristic floating window placement relative to the
+  chat buffer.
 
 ==============================================================================
 3. Installation                           *codecompanion-spinner-installation*
 
-Add the inline spinner to your CodeCompanion setup as follows:
+Install via your preferred package manager and register the extension in your
+|codecompanion| setup:
 
->lua
-    require("codecompanion").setup({
-        -- ... other codecompanion setup ...
-        extensions = {
-            spinner = {},
-        },
-    })
-<
-
-Example using lazy.nvim ~
-
+Example using lazy.nvim:
 >lua
     {
-        "olimorris/codecompanion.nvim",
-        dependencies = {
-            { "nvim-lua/plenary.nvim", version = false },
-            "franco-ruggeri/codecompanion-spinner.nvim",
+      "olimorris/codecompanion.nvim",
+      dependencies = {
+        "nvim-lua/plenary.nvim",
+        "greg17477/codecompanion-spinner.nvim",
+      },
+      opts = {
+        -- ... your existing config ...
+        extensions = {
+          spinner = {}, -- Load the extension with default settings
         },
-        opts = {
-            -- ... other codecompanion setup ...
-            extensions = {
-                spinner = {},
-            },
-        },
+      },
     }
 <
 
+==============================================================================
+4. Configuration                         *codecompanion-spinner-configuration*
+
+While the spinner works without configuration, you can customize its behavior:
+
+>lua
+    extensions = {
+      spinner = {
+        log_level = "info",
+        spinner_symbols = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
+        done_timer = 2000, -- Duration (ms) to show the "Done!" message
+        timer_interval = 200, -- Animation speed
+        messages = {
+          thinking = "thinking",
+          receiving = "receiving",
+          tool_running = "tool running",
+          tool_finished = "tool finished",
+          tool_processing = "tool processing",
+          awaiting_approval = "󱗿 Awaiting approval",
+          diff_attached = "󰙶 Diff attached",
+          done = "󰄬 Done!",
+          stopped = "stopped",
+        },
+        symbols = {
+          thinking = nil,
+          receiving = nil,
+          tool_running = nil,
+          tool_finished = "󰄬",
+          tool_processing = "󱗿",
+          awaiting_approval = "󱗿",
+          diff_attached = "󰙶",
+          done = "󰄬",
+          stopped = "󰓛",
+        },
+        window = {
+          width = 20,
+          height = 1,
+          row = -2,    -- Offset from bottom of the chat window
+          col = -1,    -- Offset from right edge
+          padding = 1, -- Right padding
+          winblend = 0,
+          zindex = 200,
+          border = "none",
+          style = "minimal",
+          focusable = false,
+          noautocmd = true,
+          winhl = nil, -- e.g., 'Normal:Comment,NormalNC:Comment'
+        },
+        highlights = {
+          spinner = "DiagnosticError",
+          thinking = "DiagnosticHint",
+          receiving = "DiagnosticInfo",
+          awaiting_approval = "DiagnosticWarn",
+          diff_attached = "DiagnosticWarn",
+          tool_running = "DiagnosticHint",
+          tool_finished = "DiagnosticOk",
+          tool_processing = "DiagnosticHint",
+          done = "DiagnosticOk",
+          -- Symbol-specific highlights
+          thinking_symbol = "DiagnosticError",
+          receiving_symbol = "DiagnosticError",
+          tool_running_symbol = "DiagnosticError",
+          tool_finished_symbol = "DiagnosticOk",
+          tool_processing_symbol = "DiagnosticWarn",
+          awaiting_approval_symbol = "DiagnosticWarn",
+          diff_attached_symbol = "DiagnosticWarn",
+          done_symbol = "DiagnosticOk",
+          stopped_symbol = "DiagnosticError",
+        },
+      },
+    },
+<
 
 ==============================================================================
-4. Acknowledgements                   *codecompanion-spinner-acknowledgements*
+5. Highlights                               *codecompanion-spinner-highlights*
 
-Thanks yuhua99 <https://github.com/yuhua99> for providing the basic spinner
-logic
-<https://github.com/olimorris/codecompanion.nvim/discussions/640#discussioncomment-12866279>.
+The spinner uses the following highlight groups by default:
+
+Group                           Default           Description ~
+spinner                         DiagnosticError   The animated symbol
+thinking                        DiagnosticHint    Text while AI is processing
+receiving                       DiagnosticInfo    Text while AI is streaming
+awaiting_approval               DiagnosticWarn    When a tool requires approval
+diff_attached                   DiagnosticWarn    When a diff is ready
+done                            DiagnosticOk      Final success state
+
+Symbol-specific highlights (e.g., `thinking_symbol`) are also available for
+fine-grained control over the symbol's color in different states.
 
 ==============================================================================
-5. Links                                         *codecompanion-spinner-links*
+6. Testing                                     *codecompanion-spinner-testing*
+
+The plugin includes a deterministic test harness to verify the state machine.
+
+Running Tests from the project root:
+>bash
+    nvim --headless -u NONE -c "set runtimepath+=." \
+      -c "luafile lua/tests/deterministic_harness.lua" -c "qall"
+<
+
+==============================================================================
+7. Acknowledgements                   *codecompanion-spinner-acknowledgements*
+
+- franco-ruggeri <https://github.com/franco-ruggeri> for the original
+  codecompanion-spinner.nvim.
+- yuhua99 <https://github.com/yuhua99> for the original spinner logic.
+- olimorris <https://github.com/olimorris> for codecompanion.nvim.
+
+==============================================================================
+8. Links                                         *codecompanion-spinner-links*
 
 1. *demo-spinner*: https://github.com/user-attachments/assets/66191a4e-8bab-4c37-88f6-f208c9f387ea
 

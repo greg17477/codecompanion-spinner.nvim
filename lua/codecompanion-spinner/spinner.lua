@@ -100,6 +100,17 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
+    -- TODO:
+    vim.notify('--------------------------------------------------------------------------------')
+    vim.notify('req_state: ' .. self.req_state)
+    vim.notify('content_phase: ' .. self.content_phase)
+    vim.notify('tool_phase: ' .. self.tool_phase)
+    vim.notify('tool_count: ' .. self.tool_count)
+    vim.notify('has_tool_call: ' .. tostring(self.has_tool_call))
+    vim.notify('is_stopped: ' .. tostring(self.is_stopped))
+    vim.notify('active_tool: ' .. tostring(self.active_tool))
+    vim.notify('--------------------------------------------------------------------------------')
+
   -- 1. Awaiting Approval or Diff (Highest Priority)
   if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL or self.diff_attached then
     if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
@@ -117,20 +128,24 @@ function M:_get_ui_state()
     return msg, "tool_running", true
   end
 
-  -- 3. Tool Just Finished (Transient State while streaming)
-  if self.tool_phase == TOOL_PHASE.FINISHED then
-    return msgs.tool_finished, "tool_finished", false
-  end
+  -- TODO: handled in step 6
+  -- -- 3. Tool Just Finished (Transient State while streaming)
+  -- if self.tool_phase == TOOL_PHASE.FINISHED then
+  --   return msgs.tool_finished, "tool_finished", false
+  -- end
 
   -- 4. Tool Processing / Waiting for next turn
   -- If tool ended while NOT streaming, or we are specifically in PROCESSING phase
   -- But ONLY if we are not in a terminal DONE state (which is handled later)
   if
-    (self.req_state ~= REQ_STATE.DONE and self.req_state ~= REQ_STATE.STREAMING) and
-    (self.tool_phase == TOOL_PHASE.PROCESSING or (self.has_tool_call and self.req_state ~= REQ_STATE.IDLE))
+    -- TODO:
+    -- (self.req_state ~= REQ_STATE.DONE and self.req_state ~= REQ_STATE.STREAMING) and
+    -- (self.tool_phase == TOOL_PHASE.PROCESSING or (self.has_tool_call and self.req_state ~= REQ_STATE.IDLE))
+    (self.req_state ~= REQ_STATE.DONE) and (self.tool_phase == TOOL_PHASE.PROCESSING or (self.has_tool_call and self.req_state ~= REQ_STATE.IDLE))
   then
     return msgs.tool_processing, "tool_processing", false
   end
+
 
   -- 5. Streaming Response vs Reasoning
   if self.req_state == REQ_STATE.STREAMING then
@@ -142,9 +157,17 @@ function M:_get_ui_state()
 
   -- 6. Done / Stopped / Finished
   if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
+    -- if self.is_stopped then
+    --   return msgs.stopped or msgs.done, "stopped", false
+    -- end
+    -- return msgs.done, "done", false
     if self.is_stopped then
       return msgs.stopped or msgs.done, "stopped", false
     end
+    -- TODO:
+    -- if self.req_state == REQ_STATE.FINISHED then
+    --   return msgs.tool_finished, "tool_finished", false
+    -- end
     return msgs.done, "done", false
   end
 
@@ -167,6 +190,7 @@ function M:handle_event(event, data)
       CodeCompanionRequestStarted = true,
       CodeCompanionRequestStreaming = true,
       CodeCompanionToolStarted = true,
+      CodeCompanionToolsStarted = true,
       CodeCompanionToolApprovalRequested = true,
       CodeCompanionDiffAttached = true,
     }
@@ -182,6 +206,7 @@ function M:handle_event(event, data)
   end
 
   if event == "CodeCompanionRequestStarted" then
+
     self:_clear_done_timer()
     self.req_state = REQ_STATE.STREAMING
     -- Before response -> "thinking"
@@ -340,6 +365,13 @@ function M:_poll_state()
     return
   end
 
+  -- TODO:
+  -- vim.notify(vim.inspect(builder.chat, { depth = 3 }))
+  -- vim.notify(vim.inspect(builder.chat.tools))
+  -- vim.notify(vim.inspect(builder.state))
+  -- vim.notify(vim.inspect(builder.tools))
+  -- vim.notify(vim.inspect(self.chat_obj))
+
   if self.chat_obj.status == "awaiting_approval" then
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
     self.has_tool_call = true
@@ -357,10 +389,22 @@ function M:_poll_state()
   local block_type = builder.state.current_block_type
   if block_type == "reasoning_message" then
     self.content_phase = CONTENT_STATE.REASONING
-  elseif block_type == "llm_message" or block_type == "tool_use" then
+  elseif block_type == "llm_message" or block_type == "tool_message" then
     self.content_phase = CONTENT_STATE.RESPONSE
-    if block_type == "tool_use" or (builder.tools and #builder.tools > 0) then
+    if block_type == "tool_message" or (builder.tools and #builder.tools > 0) then
       self.has_tool_call = true
+      self.tool_phase = TOOL_PHASE.PROCESSING
+      -- self.tool_phase = TOOL_PHASE.RUNNING
+      -- TODO:
+    -- vim.notify('--------------------------------------------------------------------------------')
+    -- vim.notify('req_state: ' .. self.req_state)
+    -- vim.notify('content_phase: ' .. self.content_phase)
+    -- vim.notify('tool_phase: ' .. self.tool_phase)
+    -- vim.notify('tool_count: ' .. self.tool_count)
+    -- vim.notify('has_tool_call: ' .. tostring(self.has_tool_call))
+    -- vim.notify('is_stopped: ' .. tostring(self.is_stopped))
+    -- vim.notify('active_tool: ' .. tostring(self.active_tool))
+    -- vim.notify('--------------------------------------------------------------------------------')
     end
   end
 end

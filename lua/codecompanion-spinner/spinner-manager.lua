@@ -54,6 +54,7 @@ M.setup = function(opts)
     "CodeCompanionRequestStreaming",
     "CodeCompanionRequestFinished",
     "CodeCompanionToolStarted",
+    "CodeCompanionToolsStarted",
     "CodeCompanionToolFinished",
     "CodeCompanionToolsFinished",
     "CodeCompanionToolApprovalRequested",

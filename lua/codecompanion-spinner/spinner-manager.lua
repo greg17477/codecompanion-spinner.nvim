@@ -7,6 +7,10 @@ local spinners = {} -- one spinner per chat
 local config = {}
 
 local function create_spinner(chat_id, bufnr)
+  if not chat_id then
+    return nil
+  end
+
   if spinners[chat_id] then
     return spinners[chat_id]
   end
@@ -18,14 +22,28 @@ local function create_spinner(chat_id, bufnr)
   return spinner
 end
 
-local function get_chat_id(data)
-  if not data then
-    return nil
+local function get_chat_id(data, bufnr)
+  if data then
+    local id = (data.chat and data.chat.id) or data.id
+    if id then
+      return id
+    end
   end
-  return (data.chat and data.chat.id) or data.id
+
+  if bufnr and bufnr > 0 then
+    local ok, chat = pcall(vim.api.nvim_buf_get_var, bufnr, "codecompanion_chat")
+    if ok and chat and chat.id then
+      return chat.id
+    end
+  end
+
+  return nil
 end
 
 function M.get_spinner(chat_id)
+  if not chat_id then
+    return nil
+  end
   return spinners[chat_id]
 end
 
@@ -77,7 +95,12 @@ M.setup = function(opts)
     group = group,
     callback = function(args)
       local event = args.match
-      local chat_id = get_chat_id(args.data)
+      local chat_id = get_chat_id(args.data, args.buf)
+
+      if not chat_id then
+        return
+      end
+
       local spinner = spinners[chat_id]
 
       -- vim.notify('pre spinner creatrion lookup: ' .. event)

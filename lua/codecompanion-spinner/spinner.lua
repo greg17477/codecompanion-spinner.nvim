@@ -257,11 +257,13 @@ function M:handle_event(event, data)
       -- end, 500)
     end
   elseif event == "CodeCompanionToolApprovalRequested" then
+    vim.notify(('Event: ' .. event))
     self:_clear_done_timer()
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
     self.has_tool_call = true
     self.started = true
   elseif event == "CodeCompanionToolApprovalFinished" then
+    vim.notify(('Event: ' .. event))
     self.tool_phase = TOOL_PHASE.PROCESSING
     -- -- TODO: these need verifying
     -- if self.tool_count > 0 then
@@ -271,6 +273,7 @@ function M:handle_event(event, data)
     --   self.tool_phase = TOOL_PHASE.PROCESSING
     -- end
   elseif event == "CodeCompanionDiffAttached" then
+    vim.notify(('Event: ' .. event))
     self:_clear_done_timer()
     self.diff_attached = true
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
@@ -281,6 +284,7 @@ function M:handle_event(event, data)
     or event == "CodeCompanionDiffAccepted"
     or event == "CodeCompanionDiffRejected"
   then
+    vim.notify(('Event: ' .. event))
     self.diff_attached = false
   elseif event == "CodeCompanionChatDone" then
     self.is_stopped = false

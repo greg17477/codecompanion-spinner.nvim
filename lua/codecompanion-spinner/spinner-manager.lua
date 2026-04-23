@@ -103,7 +103,7 @@ M.setup = function(opts)
 
       local spinner = spinners[chat_id]
 
-      -- vim.notify('pre spinner creatrion lookup: ' .. event)
+      vim.notify('PRE spinner creation lookup: ' .. event)
 
       -- -- Handle spinner creation/lookup
       -- if not spinner and chat_id then
@@ -130,21 +130,11 @@ M.setup = function(opts)
 
       spinner = create_spinner(chat_id, args.buf)
 
-      -- If we still don't have a spinner for a streaming event, try to find the active one
-      -- if not spinner and event == "CodeCompanionRequestStreaming" then
-      --    for _, s in pairs(spinners) do
-      --      if s.req_state == "STREAMING" then
-      --        spinner = s
-      --        break
-      --      end
-      --    end
-      -- end
-      --
-      -- if not spinner then
-      --   return
-      -- end
+      if not spinner then
+        return
+      end
 
-      -- vim.notify('post spinner creatrion lookup: ' .. event)
+      vim.notify('POST spinner creation lookup: ' .. event)
 
       -- Dispatch actions
       if event == "CodeCompanionChatClosed" then

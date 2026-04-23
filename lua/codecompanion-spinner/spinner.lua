@@ -184,7 +184,7 @@ function M:handle_event(event, data)
     self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
     if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
-      self.tool_phase = TOOL_PHASE.PROCESSING
+      self.tool_phase = TOOL_PHASE.NONE
     end
     if data and data.tool then
       self.active_tool = data.tool

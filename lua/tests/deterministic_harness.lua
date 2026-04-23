@@ -79,30 +79,24 @@ local opts = {
   symbols = {
     thinking = nil,
     receiving = nil,
-    tool_running = nil,
-    tool_finished = "󰄬",
-    tool_processing = "󱗿",
-    awaiting_approval = "󱗿",
-    diff_attached = "󰙶",
+    tool_processing = nil,
+    awaiting_approval = "󰩏",
     done = "󰄬",
     stopped = "󰓛",
   },
   messages = {
     thinking = "thinking",
     receiving = "receiving",
-    tool_running = "tool running",
-    tool_finished = "tool finished",
     tool_processing = "tool processing",
     awaiting_approval = "awaiting approval",
-    diff_attached = "diff attached",
     done = "done",
     stopped = "stopped",
   }
 }
 
 local function get_state_summary(s)
-  return string.format("R:%s|C:%s|T:%s|#T:%d|Diff:%s",
-    s.req_state, s.content_phase, s.tool_phase, s.tool_count, tostring(s.diff_attached))
+  return string.format("R:%s|C:%s|T:%s|#T:%d",
+    s.req_state, s.content_phase, s.tool_phase, s.tool_count)
 end
 
 local SCENARIOS = {
@@ -112,9 +106,11 @@ local SCENARIOS = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "reasoning_chunk", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
-      { event = "CodeCompanionRequestFinished", expected = "receiving" }, -- Grace period
-      { cmd = "wait", ms = 300, expected = "done" },
-      { cmd = "wait", ms = 2000, expected = "nil" },
+      { event = "CodeCompanionRequestFinished", expected = "receiving" }, -- 200ms delay in on_stream_end
+      { cmd = "wait", ms = 300, expected = "thinking" }, -- on_stream_end sets state to FINISHED
+      { event = "CodeCompanionChatDone", expected = "thinking" }, -- Another 200ms delay
+      { cmd = "wait", ms = 300, expected = "done" }, -- on_stream_end sets state to DONE
+      { cmd = "wait", ms = 2000, expected = "nil" }, -- done_timer expires
     }
   },
   {
@@ -124,7 +120,7 @@ local SCENARIOS = {
       { event = "reasoning_chunk", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "done" },
+      { cmd = "wait", ms = 300, expected = "thinking" },
     }
   },
   {
@@ -132,12 +128,12 @@ local SCENARIOS = {
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "reasoning_chunk", expected = "thinking" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
-      { cmd = "wait", ms = 500, expected = "thinking" }, -- Back to thinking
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
+      { cmd = "wait", ms = 500, expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "tool processing" }, -- used tool, now processing
+      { cmd = "wait", ms = 300, expected = "thinking" },
     }
   },
   {
@@ -145,21 +141,21 @@ local SCENARIOS = {
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "receiving" },
       { cmd = "wait", ms = 500, expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "tool processing" },
+      { cmd = "wait", ms = 300, expected = "thinking" },
     }
   },
   {
     id = "tool_to_approval_to_tool",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
       { event = "CodeCompanionToolApprovalRequested", expected = "awaiting approval" },
-      { event = "CodeCompanionToolApprovalFinished", expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolApprovalFinished", expected = "thinking" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
     }
   },
   {
@@ -185,11 +181,11 @@ local SCENARIOS = {
     id = "tool_to_end_to_response",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionRequestFinished", expected = "tool running" },
-      { cmd = "wait", ms = 300, expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
-      { cmd = "wait", ms = 500, expected = "tool processing" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionRequestFinished", expected = "tool processing" },
+      { cmd = "wait", ms = 300, expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
+      { cmd = "wait", ms = 500, expected = "thinking" },
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
     }
@@ -201,7 +197,7 @@ local SCENARIOS = {
       { event = "CodeCompanionToolApprovalRequested", expected = "awaiting approval" },
       { event = "CodeCompanionRequestFinished", expected = "awaiting approval" },
       { cmd = "wait", ms = 300, expected = "awaiting approval" },
-      { event = "CodeCompanionToolApprovalFinished", expected = "tool processing" },
+      { event = "CodeCompanionToolApprovalFinished", expected = "thinking" },
     }
   },
   {
@@ -217,11 +213,11 @@ local SCENARIOS = {
     id = "tool_to_stream_end",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionRequestFinished", expected = "tool running" },
-      { cmd = "wait", ms = 300, expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
-      { cmd = "wait", ms = 500, expected = "tool processing" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionRequestFinished", expected = "tool processing" },
+      { cmd = "wait", ms = 300, expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
+      { cmd = "wait", ms = 500, expected = "thinking" },
     }
   },
   {
@@ -230,24 +226,14 @@ local SCENARIOS = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "done" },
-    }
-  },
-  {
-    id = "diff_attached_priority",
-    steps = {
-      { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionDiffAttached", expected = "diff attached" },
-      { event = "response_chunk", expected = "diff attached" },
-      { event = "CodeCompanionToolStarted", expected = "diff attached" },
-      { event = "CodeCompanionDiffDetached", expected = "tool running" },
+      { cmd = "wait", ms = 300, expected = "thinking" },
     }
   },
   {
     id = "stop_interaction",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionChatStopped", expected = "thinking" }, -- Grace period
+      { event = "CodeCompanionChatStopped", expected = "thinking" },
       { cmd = "wait", ms = 300, expected = "stopped" },
       { cmd = "wait", ms = 2000, expected = "nil" },
     }
@@ -256,10 +242,10 @@ local SCENARIOS = {
     id = "multi_tool_parallel",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
       { cmd = "wait", ms = 500, expected = "thinking" },
     }
   },
@@ -267,8 +253,9 @@ local SCENARIOS = {
     id = "tools_finished_event",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionToolsFinished", expected = "thinking" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionToolsFinished", expected = "tool processing" }, -- Grace period
+      { cmd = "wait", ms = 300, expected = "thinking" },
     }
   },
   {
@@ -293,8 +280,8 @@ local SCENARIOS = {
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
-      { event = "CodeCompanionToolStarted", expected = "tool running" },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolStarted", expected = "tool processing" },
+      { event = "CodeCompanionToolFinished", expected = "receiving" },
       { cmd = "wait", ms = 500, expected = "receiving" },
     }
   },
@@ -313,23 +300,23 @@ local SCENARIOS = {
       {
         event = "CodeCompanionToolStarted",
         data = { tool = { name = "secrets_scan_repo" } },
-        expected = "tool running [secrets_scan_repo]"
+        expected = "tool processing"
       },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
       { cmd = "wait", ms = 500, expected = "thinking" },
       {
         event = "CodeCompanionToolStarted",
         data = { tool = { name = "git_git_status" } },
-        expected = "tool running [git_git_status]"
+        expected = "tool processing"
       },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
       { cmd = "wait", ms = 500, expected = "thinking" },
       {
         event = "CodeCompanionToolStarted",
         data = { tool = { name = "context-mode_ctx_execute" } },
-        expected = "tool running [context-mode_ctx_execute]"
+        expected = "tool processing"
       },
-      { event = "CodeCompanionToolFinished", expected = "tool finished" },
+      { event = "CodeCompanionToolFinished", expected = "thinking" },
     }
   }
 }

@@ -10,8 +10,8 @@ This plugin provides a non-intrusive floating spinner that tracks the lifecycle 
 
 ## ✨ Features
 
-- **Lifecycle Tracking:** Visual feedback for thinking, receiving (streaming), tool execution, and diff generation.
-- **State-Aware Messages:** Contextual indicators for "Awaiting Approval", "Diff Attached", and more.
+- **Lifecycle Tracking:** Visual feedback for thinking, receiving (streaming), and tool execution.
+- **State-Aware Messages:** Contextual indicators for "Awaiting Approval", "Tool Processing", and more.
 - **Multi-Chat Support:** Concurrent requests across different chat buffers are managed independently.
 - **Zero-Config by Default:** Works out of the box with sensible defaults, yet fully customizable.
 - **Smart Positioning:** Heuristic floating window placement relative to the chat buffer.
@@ -45,29 +45,23 @@ While the spinner works without configuration, you can customize every aspect of
 ```lua
 extensions = {
   spinner = {
-    log_level = "info",
+    log_level = 'info',
     spinner_symbols = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
     done_timer = 2000, -- Duration (ms) to show the "Done!" message
     timer_interval = 200, -- Animation speed
     messages = {
       thinking = "thinking",
       receiving = "receiving",
-      tool_running = "tool running",
-      tool_finished = "tool finished",
       tool_processing = "tool processing",
-      awaiting_approval = "󱗿 Awaiting approval",
-      diff_attached = "󰙶 Diff attached",
-      done = "󰄬 Done!",
+      awaiting_approval = "awaiting approval",
+      done = "done",
       stopped = "stopped",
     },
     symbols = {
       thinking = nil,
       receiving = nil,
-      tool_running = nil,
-      tool_finished = "󰄬",
-      tool_processing = "󱗿",
-      awaiting_approval = "󱗿",
-      diff_attached = "󰙶",
+      tool_processing = nil,
+      awaiting_approval = "󰩏",
       done = "󰄬",
       stopped = "󰓛",
     },
@@ -88,21 +82,15 @@ extensions = {
     highlights = {
       spinner = "DiagnosticError",
       thinking = "DiagnosticHint",
-      receiving = "DiagnosticInfo",
-      awaiting_approval = "DiagnosticWarn",
-      diff_attached = "DiagnosticWarn",
-      tool_running = "DiagnosticHint",
-      tool_finished = "DiagnosticOk",
+      receiving = "DiagnosticHint",
+      awaiting_approval = "DiagnosticInfo",
       tool_processing = "DiagnosticHint",
       done = "DiagnosticOk",
       -- New symbol-specific highlights
       thinking_symbol = "DiagnosticError",
-      receiving_symbol = "DiagnosticError",
-      tool_running_symbol = "DiagnosticError",
-      tool_finished_symbol = "DiagnosticOk",
-      tool_processing_symbol = "DiagnosticWarn",
-      awaiting_approval_symbol = "DiagnosticWarn",
-      diff_attached_symbol = "DiagnosticWarn",
+      receiving_symbol = "DiagnosticHint",
+      tool_processing_symbol = "DiagnosticHint",
+      awaiting_approval_symbol = "DiagnosticInfo",
       done_symbol = "DiagnosticOk",
       stopped_symbol = "DiagnosticError",
     },
@@ -118,9 +106,8 @@ The spinner uses the following highlight groups. You can override them in your c
 | :--- | :--- | :--- |
 | `spinner` | `DiagnosticError` | The animated symbol |
 | `thinking` | `DiagnosticHint` | Text while AI is processing |
-| `receiving` | `DiagnosticInfo` | Text while AI is streaming |
-| `awaiting_approval` | `DiagnosticWarn` | When a tool requires user input |
-| `diff_attached` | `DiagnosticWarn` | When a diff is ready for review |
+| `receiving` | `DiagnosticHint` | Text while AI is streaming |
+| `awaiting_approval` | `DiagnosticInfo` | When a tool requires user input |
 | `done` | `DiagnosticOk` | Final success state |
 
 ## 🧪 Testing

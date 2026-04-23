@@ -6,8 +6,8 @@ local M = {}
 local REQ_STATE = {
   IDLE = "IDLE",
   STREAMING = "STREAMING",
-  FINISHED = "FINISHED", -- Turn/Request finished, but chat continues
-  DONE = "DONE", -- Entire interaction finished
+  FINISHED = "FINISHED",  -- Turn/Request finished, but chat continues
+  DONE = "DONE",          -- Entire interaction finished
 }
 
 local CONTENT_STATE = {
@@ -18,7 +18,6 @@ local CONTENT_STATE = {
 
 local TOOL_PHASE = {
   NONE = "NONE",
-  -- STARTED = "STARTED",
   FINISHED = "FINISHED",
   PROCESSING = "PROCESSING",
   AWAITING_APPROVAL = "AWAITING_APPROVAL",
@@ -56,9 +55,6 @@ function M:new(chat_id, buffer, opts)
     -- Dirty checking
     last_ui_msg = nil,
     last_spinner_index = -1,
-
-    -- Diff state
-    diff_attached = false,
   }
 
   -- Set up highlights once
@@ -71,8 +67,6 @@ function M:new(chat_id, buffer, opts)
     CodeCompanionSpinnerReceivingSymbol = hl.receiving_symbol,
     CodeCompanionSpinnerAwaitingApproval = hl.awaiting_approval,
     CodeCompanionSpinnerAwaitingApprovalSymbol = hl.awaiting_approval_symbol,
-    CodeCompanionSpinnerDiffAttached = hl.diff_attached,
-    CodeCompanionSpinnerDiffAttachedSymbol = hl.diff_attached_symbol,
     CodeCompanionSpinnerToolFinished = hl.tool_finished,
     CodeCompanionSpinnerToolFinishedSymbol = hl.tool_finished_symbol,
     CodeCompanionSpinnerToolProcessing = hl.tool_processing,
@@ -98,57 +92,38 @@ end
 function M:_get_ui_state()
   local msgs = self.opts.messages or {}
 
-  -- 1. Awaiting Approval or Diff (Highest Priority)
-  if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL or self.diff_attached then
-    if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
-      return msgs.awaiting_approval, "awaiting_approval", false
-    end
+  -- Awaiting Approval or Diff (Highest Priority)
+  if self.tool_phase == TOOL_PHASE.AWAITING_APPROVAL then
     return msgs.awaiting_approval, "awaiting_approval", false
   end
 
-  -- 2. Active Tool Work
-  if self.tool_phase == TOOL_PHASE.PROCESSING or self.tool_count > 0 then
-    -- vim.notify('2. Active Tool Work')
-    -- local msg = msgs.tool_processing
-    -- if self.active_tool then
-    --   msg = msg .. " [" .. self.active_tool .. "]"
-    -- end
-    -- return msg, "tool_processing", true
+  -- Active Tool Work
+  if self.tool_phase == TOOL_PHASE.PROCESSING then
     return msgs.tool_processing, "tool_processing", true
   end
 
-  -- 3. Tool Processing / Waiting for next turn
-  -- If tool ended while NOT streaming, or we are specifically in PROCESSING phase
-  -- But ONLY if we are not in a terminal DONE state (which is handled later)
-  -- if self.req_state ~= REQ_STATE.DONE and (self.tool_phase == TOOL_PHASE.PROCESSING or self.tool_count > 0) then
-  --   vim.notify('3. Tool Processing / Waiting for next turn')
-  --   vim.notify(self.req_state)
-  --   return msgs.tool_processing, "tool_processing", true
-  -- end
-
-  -- 4. Streaming Response vs Reasoning
+  -- Streaming Response vs Reasoning
   if self.req_state == REQ_STATE.STREAMING then
-    -- vim.notify('4. Streaming Response vs Reasoning')
     if self.content_phase == CONTENT_STATE.RESPONSE then
       return msgs.receiving, "receiving", true
     end
     return msgs.thinking, "thinking", true
   end
 
-  -- 5. Done / Stopped
+  -- Finished
+  if self.req_state == REQ_STATE.FINISHED then
+    if self.tool_phase == TOOL_PHASE.PROCESSING then
+      return msgs.tool_processing, "tool_processing", true
+    end
+    return msgs.thinking, "thinking", true
+  end
+
+  -- Done / Stopped
   if self.req_state == REQ_STATE.DONE then
     if self.is_stopped then
       return msgs.stopped or msgs.done, "stopped", false
     end
     return msgs.done, "done", false
-  end
-
-  -- 6. Finished
-  if self.req_state == REQ_STATE.FINISHED then
-    if not (self.tool_phase == TOOL_PHASE.NONE) then
-      return msgs.tool_processing, "tool_processing", true
-    end
-    return msgs.thinking, "thinking", false
   end
 
   return nil, nil, false
@@ -164,24 +139,6 @@ function M:_clear_done_timer()
 end
 
 function M:handle_event(event, data)
-  -- Guard: Prevent late or out-of-order events from re-activating the spinner
-  -- if self.req_state == REQ_STATE.DONE then
-  -- TODO:
-  -- if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
-  --   local wake_up_events = {
-  --     CodeCompanionRequestStarted = true,
-  --     CodeCompanionRequestStreaming = true,
-  --     CodeCompanionToolStarted = true,
-  --     CodeCompanionToolsStarted = true,
-  --     CodeCompanionToolApprovalRequested = true,
-  --     CodeCompanionDiffAttached = true,
-  --   }
-  --   -- Only specific events can wake us from a terminal state
-  --   if not wake_up_events[event] and not event:match("Chat") then
-  --     return
-  --   end
-  -- end
-
   -- Robust chat object acquisition
   if data and data.chat then
     self.chat_obj = data.chat
@@ -190,7 +147,6 @@ function M:handle_event(event, data)
   if event == "CodeCompanionRequestStarted" then
     self:_clear_done_timer()
     self.req_state = REQ_STATE.STREAMING
-    -- Before response -> "thinking"
     self.content_phase = CONTENT_STATE.REASONING
     self.started = true
     -- Only reset tool phases if we're not awaiting approval
@@ -199,7 +155,6 @@ function M:handle_event(event, data)
     end
     self.tool_count = 0
     self.has_tool_call = false
-    -- Keep diff_attached if it was already true (highest priority)
     self.is_stopped = false
 
     -- Boundary Lock: capture chunk count to ignore old turn data
@@ -242,55 +197,18 @@ function M:handle_event(event, data)
     if self.tool_count == 0 then
       self.active_tool = nil
       self.tool_phase = TOOL_PHASE.NONE
-      -- vim.defer_fn(function()
-      --   if self.tool_phase == TOOL_PHASE.FINISHED then
-      --     -- Priority: if still streaming, fall back to thinking/receiving
-      --     if self.req_state == REQ_STATE.STREAMING then
-      --       self.tool_phase = TOOL_PHASE.NONE
-      --       self:_poll_state()
-      --     else
-      --       self.tool_phase = TOOL_PHASE.FINISHED -- ait git commit
-      --       -- self.tool_phase = TOOL_PHASE.PROCESSING -- TODO:
-      --     end
-      --     self:_update_timer_state()
-      --   end
-      -- end, 500)
     end
   elseif event == "CodeCompanionToolApprovalRequested" then
-    vim.notify(('Event: ' .. event))
     self:_clear_done_timer()
     self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
     self.has_tool_call = true
     self.started = true
   elseif event == "CodeCompanionToolApprovalFinished" then
-    vim.notify(('Event: ' .. event))
-    self.tool_phase = TOOL_PHASE.PROCESSING
-    -- -- TODO: these need verifying
-    -- if self.tool_count > 0 then
-    --   -- self.tool_phase = TOOL_PHASE.STARTED
-    --   self.tool_phase = TOOL_PHASE.PROCESSING
-    -- else
-    --   self.tool_phase = TOOL_PHASE.PROCESSING
-    -- end
-  elseif event == "CodeCompanionDiffAttached" then
-    vim.notify(('Event: ' .. event))
-    self:_clear_done_timer()
-    self.diff_attached = true
-    self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
-    self.has_tool_call = true
-    self.started = true
-  elseif
-    event == "CodeCompanionDiffDetached"
-    or event == "CodeCompanionDiffAccepted"
-    or event == "CodeCompanionDiffRejected"
-  then
-    vim.notify(('Event: ' .. event))
-    self.diff_attached = false
+    self.tool_phase = TOOL_PHASE.NONE
   elseif event == "CodeCompanionChatDone" then
     self.is_stopped = false
     self.started = false
     self.tool_count = 0
-    self.diff_attached = false
     self.req_state = REQ_STATE.DONE
     self.content_phase = CONTENT_STATE.NONE
     self.tool_phase = TOOL_PHASE.NONE
@@ -299,7 +217,6 @@ function M:handle_event(event, data)
     self.is_stopped = true
     self.started = false
     self.tool_count = 0
-    self.diff_attached = false
     self.req_state = REQ_STATE.DONE
     self.content_phase = CONTENT_STATE.NONE
     self.tool_phase = TOOL_PHASE.NONE
@@ -317,30 +234,7 @@ function M:on_stream_end(state)
   self.done_timer = vim.defer_fn(function()
     self.req_state = state or REQ_STATE.DONE
     self.started = false
-
-    -- If we are truly done (no tools, no approval, no diff), show the "Done" message for a while
-    -- if self.tool_count == 0 and self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL and not self.diff_attached then
-    --   self.done_timer = vim.defer_fn(function()
-    --     if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
-    --       self.req_state = REQ_STATE.IDLE
-    --       self.content_phase = CONTENT_STATE.NONE
-    --       if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
-    --         self.tool_phase = TOOL_PHASE.NONE
-    --       end
-    --       if not self.diff_attached then
-    --         self.diff_attached = false
-    --       end
-    --       self.started = false
-    --       self.chat_obj = nil
-    --       self.done_timer = nil
-    --       self:_update_timer_state()
-    --     end
-    --   end, self.opts.done_timer)
-    -- else
-    --   self.done_timer = nil
-    -- end
-
-    if self.tool_count == 0 and self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL and not self.diff_attached then
+    if self.tool_count == 0 and self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
       self.done_timer = vim.defer_fn(function()
         if self.req_state == REQ_STATE.DONE or self.req_state == REQ_STATE.FINISHED then
           self.req_state = REQ_STATE.IDLE
@@ -392,19 +286,16 @@ function M:_poll_state()
   end
 
   local block_type = builder.state.current_block_type
-  -- vim.notify(vim.inspect(block_type))
   if block_type == "reasoning_message" then
     self.content_phase = CONTENT_STATE.REASONING
   elseif block_type == "llm_message" or block_type == "tool_message" then
     self.content_phase = CONTENT_STATE.RESPONSE
     if block_type == "tool_message" or (builder.tools and #builder.tools > 0) then
-      -- self.tool_phase = TOOL_PHASE.PROCESSING -- displays "tool processing" on ait secrets_scan_repo
-      self.tool_phase = TOOL_PHASE.FINISHED -- displays "receiving" on ait secrets_scan_repo
+      self.tool_phase = TOOL_PHASE.FINISHED
       self.has_tool_call = true
     end
   end
 end
-
 
 function M:_update_text()
   local should_be_open = self.enabled and (
@@ -412,7 +303,6 @@ function M:_update_text()
     or self.req_state == REQ_STATE.FINISHED
     or self.req_state == REQ_STATE.DONE
     or self.tool_phase ~= TOOL_PHASE.NONE
-    or self.diff_attached
   )
 
   if not should_be_open then
@@ -597,7 +487,6 @@ function M:_update_timer_state()
     or self.req_state == REQ_STATE.FINISHED
     or self.req_state == REQ_STATE.DONE
     or self.tool_phase ~= TOOL_PHASE.NONE
-    or self.diff_attached
   ) then
     self:_start_timer()
   else

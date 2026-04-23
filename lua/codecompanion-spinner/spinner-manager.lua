@@ -26,18 +26,32 @@ local function get_chat_id(data, bufnr)
   if data then
     local id = (data.chat and data.chat.id) or data.id
     if id then
-      return id
+      return id, bufnr
+    end
+
+    -- Fallback to bufnr in data
+    if data.bufnr and data.bufnr > 0 then
+      local ok, cc = pcall(require, "codecompanion")
+      if ok then
+        local chat = cc.buf_get_chat(data.bufnr)
+        if chat and chat.id then
+          return chat.id, data.bufnr
+        end
+      end
     end
   end
 
   if bufnr and bufnr > 0 then
-    local ok, chat = pcall(vim.api.nvim_buf_get_var, bufnr, "codecompanion_chat")
-    if ok and chat and chat.id then
-      return chat.id
+    local ok, cc = pcall(require, "codecompanion")
+    if ok then
+      local chat = cc.buf_get_chat(bufnr)
+      if chat and chat.id then
+        return chat.id, bufnr
+      end
     end
   end
 
-  return nil
+  return nil, nil
 end
 
 function M.get_spinner(chat_id)
@@ -54,9 +68,12 @@ M.setup = function(opts)
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     local ft = vim.api.nvim_get_option_value("filetype", { buf = bufnr })
     if ft == "codecompanion" then
-      local ok, chat = pcall(vim.api.nvim_buf_get_var, bufnr, "codecompanion_chat")
-      if ok and chat and chat.id then
-        create_spinner(chat.id, bufnr)
+      local ok, cc = pcall(require, "codecompanion")
+      if ok then
+        local chat = cc.buf_get_chat(bufnr)
+        if chat and chat.id then
+          create_spinner(chat.id, bufnr)
+        end
       end
     end
   end
@@ -73,18 +90,10 @@ M.setup = function(opts)
     "CodeCompanionRequestStreaming",
     "CodeCompanionRequestFinished",
 
-    -- "CodeCompanionToolsStarted",
-    -- "CodeCompanionToolsFinished",
-
     "CodeCompanionToolStarted",
     "CodeCompanionToolFinished",
     "CodeCompanionToolApprovalRequested",
     "CodeCompanionToolApprovalFinished",
-
-    "CodeCompanionDiffAttached",
-    "CodeCompanionDiffDetached",
-    "CodeCompanionDiffAccepted",
-    "CodeCompanionDiffRejected",
 
     "CodeCompanionChatDone",
     "CodeCompanionChatStopped",
@@ -95,7 +104,7 @@ M.setup = function(opts)
     group = group,
     callback = function(args)
       local event = args.match
-      local chat_id = get_chat_id(args.data, args.buf)
+      local chat_id, target_bufnr = get_chat_id(args.data, args.buf)
 
       if not chat_id then
         return
@@ -103,38 +112,11 @@ M.setup = function(opts)
 
       local spinner = spinners[chat_id]
 
-      vim.notify('PRE spinner creation lookup: ' .. event)
-
-      -- -- Handle spinner creation/lookup
-      -- if not spinner and chat_id then
-      --   local creation_events = {
-      --     CodeCompanionChatCreated = true,
-      --     CodeCompanionChatOpened = true,
-      --     CodeCompanionRequestStarted = true,
-      --     CodeCompanionRequestStreaming = true,
-      --     -- TODO:
-      --     CodeCompanionToolStarted = true,
-      --     CodeCompanionToolsStarted = true,
-      --     CodeCompanionToolFinished = true,
-      --     CodeCompanionToolsFinished = true,
-      --   }
-      --   if creation_events[event] then
-      --     spinner = create_spinner(chat_id, args.buf)
-      --   end
-      -- end
-
-
-      -- if vim.tbl_contains(all_events, event) then
-      --   spinner = create_spinner(chat_id, args.buf)
-      -- end
-
-      spinner = create_spinner(chat_id, args.buf)
+      spinner = create_spinner(chat_id, target_bufnr)
 
       if not spinner then
         return
       end
-
-      vim.notify('POST spinner creation lookup: ' .. event)
 
       -- Dispatch actions
       if event == "CodeCompanionChatClosed" then

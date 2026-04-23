@@ -4,27 +4,23 @@ M.spinner_manager = require("codecompanion-spinner.spinner-manager")
 M.log = require("codecompanion-spinner.log")
 
 M.opts = {
-  log_level = "info",
+  log_level = 'info',
   spinner_symbols = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },
   done_timer = 2000,
   timer_interval = 200,
   symbols = {
     thinking = nil,
     receiving = nil,
-    tool_finished = "󰄬",
     tool_processing = nil,
-    awaiting_approval = "󱗿",
-    diff_attached = "󰙶",
+    awaiting_approval = "󰩏",
     done = "󰄬",
     stopped = "󰓛",
   },
   messages = {
     thinking = "thinking",
     receiving = "receiving",
-    tool_finished = "tool finished",
     tool_processing = "tool processing",
     awaiting_approval = "awaiting approval",
-    diff_attached = "diff attached",
     done = "done",
     stopped = "stopped",
   },
@@ -42,25 +38,21 @@ M.opts = {
     noautocmd = true,
     winhl = nil, -- Optional: e.g., 'Normal:Comment,NormalNC:Comment'
   },
-  highlights = {
-    spinner = "DiagnosticError",
-    thinking = "DiagnosticHint",
-    receiving = "DiagnosticInfo",
-    awaiting_approval = "DiagnosticWarn",
-    diff_attached = "DiagnosticWarn",
-    tool_finished = "DiagnosticOk",
-    tool_processing = "DiagnosticHint",
-    done = "DiagnosticOk",
-    -- New symbol-specific highlights
-    thinking_symbol = "DiagnosticError",
-    receiving_symbol = "DiagnosticError",
-    tool_finished_symbol = "DiagnosticOk",
-    tool_processing_symbol = "DiagnosticWarn",
-    awaiting_approval_symbol = "DiagnosticWarn",
-    diff_attached_symbol = "DiagnosticWarn",
-    done_symbol = "DiagnosticOk",
-    stopped_symbol = "DiagnosticError",
-  },
+    highlights = {
+      spinner = "DiagnosticError",
+      thinking = "DiagnosticHint",
+      receiving = "DiagnosticHint",
+      awaiting_approval = "DiagnosticInfo",
+      tool_processing = "DiagnosticHint",
+      done = "DiagnosticOk",
+      -- New symbol-specific highlights
+      thinking_symbol = "DiagnosticError",
+      receiving_symbol = "DiagnosticHint",
+      tool_processing_symbol = "DiagnosticHint",
+      awaiting_approval_symbol = "DiagnosticInfo",
+      done_symbol = "DiagnosticOk",
+      stopped_symbol = "DiagnosticError",
+    },
 }
 
 function M.setup(opts)

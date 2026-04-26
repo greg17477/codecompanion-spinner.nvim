@@ -113,9 +113,10 @@ function M:_get_ui_state()
   -- Finished
   if self.req_state == REQ_STATE.FINISHED then
     if self.tool_phase == TOOL_PHASE.PROCESSING then
-      return msgs.tool_processing, "tool_processing", true
+      -- return msgs.tool_processing, "tool_processing", true
+      return msgs.thinking, "thinking", true
     end
-    return msgs.thinking, "thinking", true
+    return msgs.done, "done", false
   end
 
   -- Done / Stopped
@@ -139,9 +140,6 @@ function M:_clear_done_timer()
 end
 
 function M:handle_event(event, data)
-  -- vim.notify(vim.inspect(event))
-  -- vim.notify(vim.inspect(data))
-  -- vim.notify(vim.inspect(data.chat))
   -- Robust chat object acquisition
   if data and data.chat then
     self.chat_obj = data.chat
@@ -187,7 +185,7 @@ function M:handle_event(event, data)
     self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
     if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
-      self.tool_phase = TOOL_PHASE.NONE
+      self.tool_phase = TOOL_PHASE.PROCESSING
     end
     if data and data.tool then
       self.active_tool = data.tool
@@ -221,7 +219,7 @@ function M:handle_event(event, data)
         self.chat_obj = cc.buf_get_chat(self.buffer)
       end
     end
-    if self.chat_obj.builder and self.chat_obj.builder.chat and self.chat_obj.builder.chat.messages then
+    if self.chat_obj and self.chat_obj.builder and self.chat_obj.builder.chat and self.chat_obj.builder.chat.messages then
       local messages = self.chat_obj.builder.chat.messages
       local last_message_content = messages[#messages].content
       if last_message_content:find("Awaiting Approval") then
@@ -246,6 +244,12 @@ function M:on_stream_end(state)
   -- Use a larger grace period (300ms) to avoid flashing "Done" before
   -- subsequent ToolStarted or RequestStarted events arrive.
   self:_clear_done_timer()
+
+  -- If it's a terminal event, we can show DONE immediately
+  if state == REQ_STATE.DONE then
+    self.req_state = REQ_STATE.DONE
+    self.started = false
+  end
 
   self.done_timer = vim.defer_fn(function()
     self.req_state = state or REQ_STATE.DONE

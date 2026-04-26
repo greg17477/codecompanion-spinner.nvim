@@ -107,8 +107,8 @@ local SCENARIOS = {
       { event = "reasoning_chunk", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" }, -- 200ms delay in on_stream_end
-      { cmd = "wait", ms = 300, expected = "thinking" }, -- on_stream_end sets state to FINISHED
-      { event = "CodeCompanionChatDone", expected = "thinking" }, -- Another 200ms delay
+      { cmd = "wait", ms = 300, expected = "done" }, -- on_stream_end sets state to FINISHED
+      { event = "CodeCompanionChatDone", expected = "done" }, -- Show immediately
       { cmd = "wait", ms = 300, expected = "done" }, -- on_stream_end sets state to DONE
       { cmd = "wait", ms = 2000, expected = "nil" }, -- done_timer expires
     }
@@ -120,7 +120,7 @@ local SCENARIOS = {
       { event = "reasoning_chunk", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "thinking" },
+      { cmd = "wait", ms = 300, expected = "done" },
     }
   },
   {
@@ -133,7 +133,7 @@ local SCENARIOS = {
       { cmd = "wait", ms = 500, expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "thinking" },
+      { cmd = "wait", ms = 300, expected = "done" },
     }
   },
   {
@@ -145,7 +145,7 @@ local SCENARIOS = {
       { event = "CodeCompanionToolFinished", expected = "receiving" },
       { cmd = "wait", ms = 500, expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "thinking" },
+      { cmd = "wait", ms = 300, expected = "done" },
     }
   },
   {
@@ -184,8 +184,8 @@ local SCENARIOS = {
       { event = "CodeCompanionToolStarted", expected = "tool processing" },
       { event = "CodeCompanionRequestFinished", expected = "tool processing" },
       { cmd = "wait", ms = 300, expected = "tool processing" },
-      { event = "CodeCompanionToolFinished", expected = "thinking" },
-      { cmd = "wait", ms = 500, expected = "thinking" },
+      { event = "CodeCompanionToolFinished", expected = "done" },
+      { cmd = "wait", ms = 500, expected = "done" },
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
     }
@@ -197,7 +197,7 @@ local SCENARIOS = {
       { event = "CodeCompanionToolApprovalRequested", expected = "awaiting approval" },
       { event = "CodeCompanionRequestFinished", expected = "awaiting approval" },
       { cmd = "wait", ms = 300, expected = "awaiting approval" },
-      { event = "CodeCompanionToolApprovalFinished", expected = "thinking" },
+      { event = "CodeCompanionToolApprovalFinished", expected = "done" },
     }
   },
   {
@@ -216,8 +216,8 @@ local SCENARIOS = {
       { event = "CodeCompanionToolStarted", expected = "tool processing" },
       { event = "CodeCompanionRequestFinished", expected = "tool processing" },
       { cmd = "wait", ms = 300, expected = "tool processing" },
-      { event = "CodeCompanionToolFinished", expected = "thinking" },
-      { cmd = "wait", ms = 500, expected = "thinking" },
+      { event = "CodeCompanionToolFinished", expected = "done" },
+      { cmd = "wait", ms = 500, expected = "done" },
     }
   },
   {
@@ -226,14 +226,14 @@ local SCENARIOS = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { event = "response_chunk", expected = "receiving" },
       { event = "CodeCompanionRequestFinished", expected = "receiving" },
-      { cmd = "wait", ms = 300, expected = "thinking" },
+      { cmd = "wait", ms = 300, expected = "done" },
     }
   },
   {
     id = "stop_interaction",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionChatStopped", expected = "thinking" },
+      { event = "CodeCompanionChatStopped", expected = "stopped" }, -- Show immediately
       { cmd = "wait", ms = 300, expected = "stopped" },
       { cmd = "wait", ms = 2000, expected = "nil" },
     }
@@ -269,7 +269,7 @@ local SCENARIOS = {
   {
     id = "done_to_new_request",
     steps = {
-      { event = "CodeCompanionChatDone", expected = "nil" }, -- Grace period
+      { event = "CodeCompanionChatDone", expected = "done" }, -- Show immediately
       { cmd = "wait", ms = 300, expected = "done" },
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
       { cmd = "wait", ms = 2000, expected = "thinking" }, -- Done timer should have been cleared
@@ -289,7 +289,7 @@ local SCENARIOS = {
     id = "terminal_stopped_message",
     steps = {
       { event = "CodeCompanionRequestStarted", expected = "thinking" },
-      { event = "CodeCompanionChatStopped", expected = "thinking" },
+      { event = "CodeCompanionChatStopped", expected = "stopped" }, -- Show immediately
       { cmd = "wait", ms = 300, expected = "stopped" },
     }
   },

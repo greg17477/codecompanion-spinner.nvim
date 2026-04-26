@@ -139,6 +139,9 @@ function M:_clear_done_timer()
 end
 
 function M:handle_event(event, data)
+  -- vim.notify(vim.inspect(event))
+  -- vim.notify(vim.inspect(data))
+  -- vim.notify(vim.inspect(data.chat))
   -- Robust chat object acquisition
   if data and data.chat then
     self.chat_obj = data.chat
@@ -212,6 +215,19 @@ function M:handle_event(event, data)
     self.req_state = REQ_STATE.DONE
     self.content_phase = CONTENT_STATE.NONE
     self.tool_phase = TOOL_PHASE.NONE
+    if not self.chat_obj then
+      local ok, cc = pcall(require, "codecompanion")
+      if ok then
+        self.chat_obj = cc.buf_get_chat(self.buffer)
+      end
+    end
+    if self.chat_obj.builder and self.chat_obj.builder.chat and self.chat_obj.builder.chat.messages then
+      local messages = self.chat_obj.builder.chat.messages
+      local last_message_content = messages[#messages].content
+      if last_message_content:find("Awaiting Approval") then
+        self.tool_phase = TOOL_PHASE.AWAITING_APPROVAL
+      end
+    end
     self:on_stream_end(REQ_STATE.DONE)
   elseif event == "CodeCompanionChatStopped" then
     self.is_stopped = true

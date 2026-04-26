@@ -113,8 +113,8 @@ function M:_get_ui_state()
   -- Finished
   if self.req_state == REQ_STATE.FINISHED then
     if self.tool_phase == TOOL_PHASE.PROCESSING then
-      -- return msgs.tool_processing, "tool_processing", true
-      return msgs.thinking, "thinking", true
+      return msgs.tool_processing, "tool_processing", true
+      -- return msgs.thinking, "thinking", true
     end
     return msgs.done, "done", false
   end
@@ -185,7 +185,7 @@ function M:handle_event(event, data)
     self:_clear_done_timer()
     self.tool_count = self.tool_count + 1
     if self.tool_phase ~= TOOL_PHASE.AWAITING_APPROVAL then
-      self.tool_phase = TOOL_PHASE.PROCESSING
+      self.tool_phase = TOOL_PHASE.NONE
     end
     if data and data.tool then
       self.active_tool = data.tool

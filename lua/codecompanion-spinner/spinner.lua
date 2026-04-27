@@ -113,8 +113,9 @@ function M:_get_ui_state()
   -- Finished
   if self.req_state == REQ_STATE.FINISHED then
     if self.tool_phase == TOOL_PHASE.PROCESSING then
-      return msgs.tool_processing, "tool_processing", true
-    elseif self.tool_phase == TOOL_PHASE.FINISHED then
+      return msgs.thinking, "thinking", true
+    end
+    if self.content_phase == CONTENT_STATE.REASONING then
       return msgs.thinking, "thinking", true
     end
     return msgs.done, "done", false
